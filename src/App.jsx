@@ -7,7 +7,7 @@ import {
   Wifi, WifiOff, Settings, X, Loader, Users, LogOut,
   ChevronLeft, Eye, EyeOff,
 } from 'lucide-react';
-import { readAllFromSheets, writeAllToSheets, uploadImageToDrive, pollDriveUrl } from './sheetsApi';
+import { readAllFromSheets, writeAllToSheets, writeKeyToSheets, uploadImageToDrive, pollDriveUrl } from './sheetsApi';
 
 // ═══════════════════════════════════════════════════════════
 //  GEMINI OCR HELPERS
