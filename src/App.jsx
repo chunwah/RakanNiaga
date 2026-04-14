@@ -1616,7 +1616,7 @@ function GoalsChecklist({ goals, setGoals, members }) {
 // ═══════════════════════════════════════════════════════════
 //  PARTNER CHAT  (member-aware, no sender toggle)
 // ═══════════════════════════════════════════════════════════
-function PartnerChat({ messages, setMessages, members }) {
+function PartnerChat({ messages, setMessages, members, isLive }) {
   const { currentMember } = useApp();
   const [input, setInput] = useState('');
   const bottomRef = useRef();
@@ -1636,7 +1636,13 @@ function PartnerChat({ messages, setMessages, members }) {
       {/* Who's chatting indicator */}
       <div className="px-3 py-2.5 bg-white border-b border-slate-100 flex items-center gap-2">
         <MemberAvatar member={currentMember} size={22}/>
-        <span className="text-xs text-slate-500">以 <span className="font-semibold text-slate-700">{currentMember?.name}</span> 身份发送</span>
+        <span className="text-xs text-slate-500 flex-1">以 <span className="font-semibold text-slate-700">{currentMember?.name}</span> 身份发送</span>
+        {isLive && (
+          <span className="flex items-center gap-1 text-xs text-emerald-600">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"/>
+            实时
+          </span>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
@@ -1798,6 +1804,35 @@ export default function App() {
 
   useEffect(() => { loadFromSheets(); }, [loadFromSheets]);
 
+  // ── Chat live polling ──────────────────────────────────
+  // While on the chat tab, pull latest messages every 6 s.
+  // Uses a guard ref to skip if a request is already in flight.
+  const chatPollingRef = useRef(false);
+  const [chatLive, setChatLive] = useState(false);
+
+  useEffect(() => {
+    if (tab !== 'chat' || !sheetsUrl) { setChatLive(false); return; }
+    setChatLive(true);
+
+    const poll = async () => {
+      if (chatPollingRef.current) return;
+      chatPollingRef.current = true;
+      try {
+        const data = await readAllFromSheets(sheetsUrl);
+        if (Array.isArray(data?.rn_messages)) {
+          // Block the write-back watcher so this read doesn't trigger a re-sync
+          syncBlockedRef.current = true;
+          setMessages(data.rn_messages);
+          setTimeout(() => { syncBlockedRef.current = false; }, 200);
+        }
+      } catch { /* silent — keep trying next tick */ }
+      chatPollingRef.current = false;
+    };
+
+    const id = setInterval(poll, 6000);
+    return () => { clearInterval(id); setChatLive(false); };
+  }, [tab, sheetsUrl]); // eslint-disable-line
+
   const go = (t) => { setTab(t); setMoreOpen(false); };
 
   const handleSaveSettings = (url) => {
@@ -1883,7 +1918,7 @@ export default function App() {
           {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
           {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
           {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
-          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members}/>}
+          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={chatLive}/>}
           {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
         </main>
 
