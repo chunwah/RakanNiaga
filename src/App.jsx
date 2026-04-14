@@ -1761,13 +1761,24 @@ export default function App() {
     };
   }, [members, files, products, expenses, suppliers, goals, messages, calc]);
 
+  // True while local changes haven't been confirmed written to Sheets yet.
+  // Auto-sync read is skipped while this is set, preventing remote overwrites.
+  const pendingWriteRef = useRef(false);
+
   const scheduleSync = useCallback(() => {
     if (syncBlockedRef.current || !sheetsUrlRef.current) return;
     clearTimeout(syncTimerRef.current);
+    pendingWriteRef.current = true;   // local edits are ahead of Sheets
     setSyncStatus('syncing');
     syncTimerRef.current = setTimeout(() => {
       writeAllToSheets(sheetsUrlRef.current, dataRef.current);
-      setTimeout(() => { setSyncStatus('synced'); setLastSync(new Date()); }, 3000);
+      // Wait 5 s after the write fires — enough for Apps Script to store it —
+      // then allow auto-sync reads again.
+      setTimeout(() => {
+        setSyncStatus('synced');
+        setLastSync(new Date());
+        pendingWriteRef.current = false;
+      }, 5000);
     }, 800);
   }, []);
 
@@ -1813,11 +1824,12 @@ export default function App() {
     if (!sheetsUrl) return;
 
     const tick = async () => {
-      if (autoSyncRef.current) return;
+      // Skip if another request is in flight, or if we have local edits that
+      // haven't finished writing to Sheets yet (prevents remote overwrite).
+      if (autoSyncRef.current || pendingWriteRef.current) return;
       autoSyncRef.current = true;
       try {
         const data = await readAllFromSheets(sheetsUrl);
-        // Block write-back watcher so this read doesn't trigger a re-sync
         syncBlockedRef.current = true;
         applyRemoteData(data);
         setTimeout(() => { syncBlockedRef.current = false; }, 200);
