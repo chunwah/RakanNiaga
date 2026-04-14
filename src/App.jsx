@@ -1804,34 +1804,30 @@ export default function App() {
 
   useEffect(() => { loadFromSheets(); }, [loadFromSheets]);
 
-  // ── Chat live polling ──────────────────────────────────
-  // While on the chat tab, pull latest messages every 6 s.
-  // Uses a guard ref to skip if a request is already in flight.
-  const chatPollingRef = useRef(false);
-  const [chatLive, setChatLive] = useState(false);
+  // ── Global 10 s auto-sync ─────────────────────────────
+  // Every 10 s, pull all data from Sheets regardless of active tab.
+  // Guard ref prevents overlapping requests.
+  const autoSyncRef = useRef(false);
 
   useEffect(() => {
-    if (tab !== 'chat' || !sheetsUrl) { setChatLive(false); return; }
-    setChatLive(true);
+    if (!sheetsUrl) return;
 
-    const poll = async () => {
-      if (chatPollingRef.current) return;
-      chatPollingRef.current = true;
+    const tick = async () => {
+      if (autoSyncRef.current) return;
+      autoSyncRef.current = true;
       try {
         const data = await readAllFromSheets(sheetsUrl);
-        if (Array.isArray(data?.rn_messages)) {
-          // Block the write-back watcher so this read doesn't trigger a re-sync
-          syncBlockedRef.current = true;
-          setMessages(data.rn_messages);
-          setTimeout(() => { syncBlockedRef.current = false; }, 200);
-        }
-      } catch { /* silent — keep trying next tick */ }
-      chatPollingRef.current = false;
+        // Block write-back watcher so this read doesn't trigger a re-sync
+        syncBlockedRef.current = true;
+        applyRemoteData(data);
+        setTimeout(() => { syncBlockedRef.current = false; }, 200);
+      } catch { /* silent — will retry next tick */ }
+      autoSyncRef.current = false;
     };
 
-    const id = setInterval(poll, 6000);
-    return () => { clearInterval(id); setChatLive(false); };
-  }, [tab, sheetsUrl]); // eslint-disable-line
+    const id = setInterval(tick, 10000);
+    return () => clearInterval(id);
+  }, [sheetsUrl, applyRemoteData]);
 
   const go = (t) => { setTab(t); setMoreOpen(false); };
 
@@ -1918,7 +1914,7 @@ export default function App() {
           {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
           {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
           {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
-          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={chatLive}/>}
+          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={!!sheetsUrl}/>}
           {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
         </main>
 
