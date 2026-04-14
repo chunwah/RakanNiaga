@@ -79,3 +79,36 @@ export function writeAllToSheets(url, dataMap) {
     writeKeyToSheets(url, key, value); // fire-and-forget
   }
 }
+
+/**
+ * 上传图片到 Google Drive（通过 Apps Script）
+ * 使用 no-cors fire-and-forget；Apps Script 处理后会把 Drive URL 写入 Sheets
+ */
+export async function uploadImageToDrive(url, id, base64, fileName, mimeType) {
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      mode:   'no-cors',
+      body:   JSON.stringify({ key: '__upload__', value: { id, base64, fileName, mimeType } }),
+    });
+  } catch (err) {
+    console.warn('[Drive] Upload failed:', err.message);
+  }
+}
+
+/**
+ * 轮询 Sheets，等待 Apps Script 写回 Drive URL
+ * 每 3 秒查一次，最多等 30 秒
+ */
+export async function pollDriveUrl(sheetsUrl, id) {
+  const driveKey = 'rn_driveurl_' + id;
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const data = await readAllFromSheets(sheetsUrl);
+      if (data?.[driveKey]) return data[driveKey];
+    } catch { /* keep trying */ }
+  }
+  return null;
+}

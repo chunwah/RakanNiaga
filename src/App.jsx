@@ -7,7 +7,85 @@ import {
   Wifi, WifiOff, Settings, X, Loader, Users, LogOut,
   ChevronLeft, Eye, EyeOff,
 } from 'lucide-react';
-import { readAllFromSheets, writeAllToSheets } from './sheetsApi';
+import { readAllFromSheets, writeAllToSheets, uploadImageToDrive, pollDriveUrl } from './sheetsApi';
+
+// ═══════════════════════════════════════════════════════════
+//  GEMINI OCR HELPERS
+// ═══════════════════════════════════════════════════════════
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY || '';
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent';
+
+/** Resize + compress image via canvas; returns { base64, mimeType, dataUrl } */
+async function compressImage(file, maxWidth = 1200, quality = 0.85) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const blobUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(blobUrl);
+      canvas.toBlob(blob => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({
+          base64:  reader.result.split(',')[1],
+          mimeType: 'image/jpeg',
+          dataUrl:  reader.result,
+        });
+        reader.readAsDataURL(blob);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(blobUrl);
+      // Fallback: read as-is
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        base64:  reader.result.split(',')[1],
+        mimeType: file.type,
+        dataUrl:  reader.result,
+      });
+      reader.readAsDataURL(file);
+    };
+    img.src = blobUrl;
+  });
+}
+
+/** Call Gemini vision to extract supplier card / product label info */
+async function callGeminiOCR(base64, mimeType) {
+  if (!GEMINI_KEY) return { supplier: '', contact: '', price: '', moq: '' };
+  try {
+    const resp = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            {
+              text: 'Analyze this image (business card, product tag, price list, or supplier document). Extract and return ONLY a valid JSON object with exactly these keys: "supplier" (company or brand name), "contact" (person name and phone number), "price" (unit price or price range with currency), "moq" (minimum order quantity). Use empty string "" for any field not visible. No markdown, no explanation — just the JSON object.',
+            },
+            { inline_data: { mime_type: mimeType, data: base64 } },
+          ],
+        }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    });
+    const data = await resp.json();
+    const raw  = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const clean = raw.replace(/```json\s*|\s*```/g, '').trim();
+    const parsed = JSON.parse(clean);
+    return {
+      supplier: String(parsed.supplier || ''),
+      contact:  String(parsed.contact  || ''),
+      price:    String(parsed.price    || ''),
+      moq:      String(parsed.moq      || ''),
+    };
+  } catch (err) {
+    console.warn('[Gemini] OCR failed:', err.message);
+    return { supplier: '', contact: '', price: '', moq: '' };
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  CONTEXT
@@ -824,21 +902,57 @@ function Dashboard({ files, products, expenses, suppliers, goals, go, onReset })
 // ═══════════════════════════════════════════════════════════
 //  FILE CENTER
 // ═══════════════════════════════════════════════════════════
-function FileCenter({ files, setFiles }) {
+function FileCenter({ files, setFiles, sheetsUrl }) {
   const [filter, setFilter] = useState('all');
   const fileRef = useRef();
 
-  const handleUpload = (e) => {
+  const handleUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return;
+    e.target.value = '';
     const id = Date.now();
-    const url = URL.createObjectURL(file);
-    const emptyOcr = { supplier: '', contact: '', price: '', moq: '' };
-    setFiles(f=>[{id,name:file.name,cat:'card',date:new Date().toLocaleDateString('zh-CN'),status:'done',ocr:emptyOcr,preview:url},...f]);
-    e.target.value='';
+
+    // Show immediately with scanning state
+    setFiles(f => [{
+      id, name: file.name, cat: 'card',
+      date: new Date().toLocaleDateString('zh-CN'),
+      status: 'scanning', ocr: { supplier: '', contact: '', price: '', moq: '' },
+      preview: URL.createObjectURL(file), driveUrl: null,
+    }, ...f]);
+
+    // Compress image once; use for both Gemini and Drive
+    const { base64, mimeType, dataUrl } = await compressImage(file);
+
+    // Run Gemini OCR + Drive upload in parallel
+    const [ocrResult] = await Promise.allSettled([
+      callGeminiOCR(base64, mimeType),
+      sheetsUrl ? uploadImageToDrive(sheetsUrl, id, base64, file.name, mimeType) : Promise.resolve(),
+    ]);
+
+    const ocr = ocrResult.status === 'fulfilled'
+      ? ocrResult.value
+      : { supplier: '', contact: '', price: '', moq: '' };
+
+    // Mark done with OCR prefilled; preview stays as local blob for now
+    setFiles(f => f.map(x => x.id === id
+      ? { ...x, status: 'done', ocr, preview: dataUrl }
+      : x
+    ));
+
+    // Poll for Drive URL in background (Apps Script writes it to Sheets after saving)
+    if (sheetsUrl) {
+      pollDriveUrl(sheetsUrl, id).then(driveUrl => {
+        if (driveUrl) {
+          setFiles(f => f.map(x => x.id === id ? { ...x, driveUrl } : x));
+        }
+      });
+    }
   };
 
   const updateOcr = (id, field, val) => {
-    setFiles(f=>f.map(x=>x.id===id ? {...x, ocr:{...x.ocr,[field]:val}} : x));
+    setFiles(f => f.map(x => x.id === id ? { ...x, ocr: { ...x.ocr, [field]: val } } : x));
+  };
+  const updateFileCat = (id, val) => {
+    setFiles(f => f.map(x => x.id === id ? { ...x, cat: val } : x));
   };
 
   const shown = filter==='all' ? files : files.filter(f=>f.cat===filter);
@@ -877,32 +991,76 @@ function FileCenter({ files, setFiles }) {
                   <p className="text-xs text-slate-400">{f.date}</p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${f.status==='scanning'?'bg-amber-100 text-amber-600':'bg-emerald-100 text-emerald-600'}`}>
-                    {f.status==='scanning'?'扫描中…':'✓ 已提取'}
-                  </span>
+                  {f.status === 'scanning' ? (
+                    <span className="text-xs px-2 py-1 rounded-full font-medium bg-amber-100 text-amber-600 flex items-center gap-1">
+                      <Loader size={11} className="animate-spin"/> AI 识别中…
+                    </span>
+                  ) : f.driveUrl ? (
+                    <a href={f.driveUrl} target="_blank" rel="noreferrer"
+                      className="text-xs px-2 py-1 rounded-full font-medium bg-emerald-100 text-emerald-600">
+                      ✓ Drive
+                    </a>
+                  ) : (
+                    <span className="text-xs px-2 py-1 rounded-full font-medium bg-slate-100 text-slate-500">
+                      本地
+                    </span>
+                  )}
                   <button onClick={()=>setFiles(fs=>fs.filter(x=>x.id!==f.id))} className="text-rose-400"><Trash2 size={14}/></button>
                 </div>
               </div>
-              {f.status==='done' && f.ocr && (
+              {f.status === 'scanning' && (
+                <div className="px-3 pb-3">
+                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 flex items-center gap-2">
+                    <Loader size={14} className="text-amber-500 animate-spin flex-shrink-0"/>
+                    <span className="text-xs text-amber-600">AI 正在识别图片内容…</span>
+                  </div>
+                </div>
+              )}
+              {f.status === 'done' && f.ocr && (
                 <div className="px-3 pb-3">
                   <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2">
-                    <span className="text-xs font-semibold text-slate-500">备注信息（可编辑）</span>
+                    <span className="text-xs font-semibold text-slate-500">
+                      {GEMINI_KEY ? '🤖 AI 识别结果（可编辑）' : '备注信息（可编辑）'}
+                    </span>
+                    {/* Category select */}
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">📂 分类</span>
+                      <select
+                        value={f.cat}
+                        onChange={ev => updateFileCat(f.id, ev.target.value)}
+                        className="flex-1 bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs focus:outline-none focus:border-indigo-400"
+                      >
+                        <option value="card">名片</option>
+                        <option value="product">产品图</option>
+                        <option value="contract">合同</option>
+                        <option value="other">其他</option>
+                      </select>
+                    </div>
+                    {/* OCR fields */}
                     {[
-                      ['🏭 供应商',  'supplier', f.ocr.supplier],
-                      ['📞 联系方式','contact',  f.ocr.contact],
-                      ['💰 初步报价','price',    f.ocr.price],
-                      ['📦 MOQ',    'moq',      f.ocr.moq],
-                    ].map(([label, field, val])=>(
+                      ['🏭 供应商',   'supplier', f.ocr.supplier],
+                      ['📞 联系方式', 'contact',  f.ocr.contact],
+                      ['💰 初步报价', 'price',    f.ocr.price],
+                      ['📦 MOQ',     'moq',      f.ocr.moq],
+                    ].map(([label, field, val]) => (
                       <div key={field} className="flex items-center gap-2 text-xs">
                         <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">{label}</span>
                         <input
                           value={val}
-                          onChange={ev=>updateOcr(f.id, field, ev.target.value)}
+                          onChange={ev => updateOcr(f.id, field, ev.target.value)}
                           placeholder="填写..."
                           className="flex-1 bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs focus:outline-none focus:border-indigo-400"
                         />
                       </div>
                     ))}
+                    {f.driveUrl && (
+                      <div className="pt-1 border-t border-slate-100">
+                        <a href={f.driveUrl} target="_blank" rel="noreferrer"
+                          className="text-xs text-indigo-500 underline">
+                          📎 在 Google Drive 查看原图
+                        </a>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1703,7 +1861,7 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto" style={{paddingBottom:tab==='chat'?0:'4.5rem'}}>
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
-          {tab==='files'      && <FileCenter files={files} setFiles={setFiles}/>}
+          {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
           {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
           {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members}/>}
           {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
