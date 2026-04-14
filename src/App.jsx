@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, createContext, useContext } f
 import {
   Home, FileText, ShoppingBag, Wallet, MoreHorizontal,
   Star, Calculator, CheckSquare, MessageCircle, Upload,
-  Plus, Trash2, Check, Send, ScanLine, Zap, MapPin,
+  Plus, Trash2, Check, Send, MapPin,
   ChevronRight, Award, Download, RefreshCw, AlertTriangle,
   Wifi, WifiOff, Settings, X, Loader, Users, LogOut,
   ChevronLeft, Eye, EyeOff,
@@ -58,15 +58,8 @@ const MEMBER_COLORS = [
 ];
 
 // ═══════════════════════════════════════════════════════════
-//  SEED / MOCK DATA
+//  SEED DATA
 // ═══════════════════════════════════════════════════════════
-const MOCK_OCR = [
-  { supplier: '广州源一纺织有限公司', contact: '王经理  +86 138-0000-1234', price: 'RM 12.50 / 件', moq: '100 件起订' },
-  { supplier: '深圳美创饰品贸易',     contact: '李总  +86 139-8888-5678',   price: 'RM 8.00 / 个',  moq: '200 个起订' },
-  { supplier: '义乌众诚百货批发',     contact: '陈老板  +86 137-6666-9999', price: 'RM 5.50 / 件',  moq: '500 件起订' },
-  { supplier: '杭州风尚服装厂',       contact: '刘厂长  +86 135-2222-3333', price: 'RM 18.00 / 件', moq: '50 件起订'  },
-];
-
 const SEED_EXPENSES = [
   { id: 1, desc: '机票（去程）',    amount: 850, cat: 'transport',     by: 'me',      date: '2026-04-10' },
   { id: 2, desc: '酒店 3 晚',      amount: 600, cat: 'accommodation', by: 'partner', date: '2026-04-10' },
@@ -834,18 +827,18 @@ function Dashboard({ files, products, expenses, suppliers, goals, go, onReset })
 function FileCenter({ files, setFiles }) {
   const [filter, setFilter] = useState('all');
   const fileRef = useRef();
-  const mockIdx = useRef(0);
 
   const handleUpload = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const id = Date.now();
     const url = URL.createObjectURL(file);
-    setFiles(f=>[{id,name:file.name,cat:'card',date:new Date().toLocaleDateString('zh-CN'),status:'scanning',ocr:null,preview:url},...f]);
-    setTimeout(()=>{
-      const ocr = MOCK_OCR[mockIdx.current % MOCK_OCR.length]; mockIdx.current++;
-      setFiles(f=>f.map(x=>x.id===id?{...x,status:'done',ocr}:x));
-    },2200);
+    const emptyOcr = { supplier: '', contact: '', price: '', moq: '' };
+    setFiles(f=>[{id,name:file.name,cat:'card',date:new Date().toLocaleDateString('zh-CN'),status:'done',ocr:emptyOcr,preview:url},...f]);
     e.target.value='';
+  };
+
+  const updateOcr = (id, field, val) => {
+    setFiles(f=>f.map(x=>x.id===id ? {...x, ocr:{...x.ocr,[field]:val}} : x));
   };
 
   const shown = filter==='all' ? files : files.filter(f=>f.cat===filter);
@@ -890,22 +883,24 @@ function FileCenter({ files, setFiles }) {
                   <button onClick={()=>setFiles(fs=>fs.filter(x=>x.id!==f.id))} className="text-rose-400"><Trash2 size={14}/></button>
                 </div>
               </div>
-              {f.status==='scanning' && (
-                <div className="px-3 pb-3">
-                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-3">
-                    <div className="flex items-center gap-2 mb-2"><ScanLine size={15} className="text-amber-500 animate-pulse"/><span className="text-xs text-amber-600 font-medium">AI 正在扫描…</span></div>
-                    <div className="h-1.5 bg-amber-100 rounded-full overflow-hidden"><div className="h-full bg-amber-400 rounded-full animate-pulse" style={{width:'65%'}}/></div>
-                  </div>
-                </div>
-              )}
               {f.status==='done' && f.ocr && (
                 <div className="px-3 pb-3">
-                  <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 space-y-1.5">
-                    <div className="flex items-center gap-1 mb-1"><Zap size={12} className="text-emerald-600"/><span className="text-xs font-semibold text-emerald-700">AI 提取结果</span></div>
-                    {[['🏭 供应商',f.ocr.supplier],['📞 联系方式',f.ocr.contact],['💰 初步报价',f.ocr.price],['📦 起订 MOQ',f.ocr.moq]].map(([k,v])=>(
-                      <div key={k} className="flex gap-2 text-xs">
-                        <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">{k}</span>
-                        <span className="font-medium text-slate-800">{v}</span>
+                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2">
+                    <span className="text-xs font-semibold text-slate-500">备注信息（可编辑）</span>
+                    {[
+                      ['🏭 供应商',  'supplier', f.ocr.supplier],
+                      ['📞 联系方式','contact',  f.ocr.contact],
+                      ['💰 初步报价','price',    f.ocr.price],
+                      ['📦 MOQ',    'moq',      f.ocr.moq],
+                    ].map(([label, field, val])=>(
+                      <div key={field} className="flex items-center gap-2 text-xs">
+                        <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">{label}</span>
+                        <input
+                          value={val}
+                          onChange={ev=>updateOcr(f.id, field, ev.target.value)}
+                          placeholder="填写..."
+                          className="flex-1 bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs focus:outline-none focus:border-indigo-400"
+                        />
                       </div>
                     ))}
                   </div>
