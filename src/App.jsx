@@ -899,6 +899,19 @@ function Dashboard({ files, products, expenses, suppliers, goals, go, onReset })
   );
 }
 
+// Extract Drive file ID from any Drive URL and return embeddable thumbnail URL
+function driveThumb(url, size = 'w200') {
+  if (!url) return null;
+  const m = url.match(/(?:id=|\/d\/)([A-Za-z0-9_-]{20,})/);
+  return m ? `https://drive.google.com/thumbnail?id=${m[1]}&sz=${size}` : url;
+}
+// Return the standard Drive view link from any Drive URL
+function driveViewUrl(url) {
+  if (!url) return url;
+  const m = url.match(/(?:id=|\/d\/)([A-Za-z0-9_-]{20,})/);
+  return m ? `https://drive.google.com/file/d/${m[1]}/view` : url;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  FILE CENTER
 // ═══════════════════════════════════════════════════════════
@@ -985,7 +998,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
             <Card key={f.id} className="overflow-hidden">
               <div className="p-3 flex items-center gap-3">
                 {(f.preview || f.driveUrl) ? (
-                  <img src={f.preview || f.driveUrl} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0"/>
+                  <img src={f.preview || driveThumb(f.driveUrl)} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0"/>
                 ) : (
                   <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center flex-shrink-0"><FileText size={20} className="text-slate-400"/></div>
                 )}
@@ -1058,7 +1071,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                     ))}
                     {f.driveUrl && (
                       <div className="pt-1 border-t border-slate-100">
-                        <a href={f.driveUrl} target="_blank" rel="noreferrer"
+                        <a href={driveViewUrl(f.driveUrl)} target="_blank" rel="noreferrer"
                           className="text-xs text-indigo-500 underline">
                           📎 在 Google Drive 查看原图
                         </a>
