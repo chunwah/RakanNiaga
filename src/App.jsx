@@ -122,6 +122,69 @@ function usePersist(key, initial, transform) {
 const stripPreviews = (files) => files.map((f) => ({ ...f, preview: null }));
 
 // ═══════════════════════════════════════════════════════════
+//  PER-MODULE SAVE HOOK + SAVE BAR
+// ═══════════════════════════════════════════════════════════
+/**
+ * useSave(sheetsUrl, sheetsKey, getLatest)
+ * - markDirty(): call after any local state change
+ * - handleSave(): start/reset 5-second countdown then write
+ * - getLatest: fn() returning the freshest data at write time
+ */
+function useSave(sheetsUrl, sheetsKey, getLatest) {
+  const [isDirty,   setIsDirty]   = useState(false);
+  const [countdown, setCountdown] = useState(null);
+  const intervalRef = useRef(null);
+
+  const markDirty = useCallback(() => setIsDirty(true), []);
+
+  const handleSave = useCallback(() => {
+    if (!sheetsUrl) return;
+    clearInterval(intervalRef.current);
+    let n = 5;
+    setCountdown(n);
+    intervalRef.current = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(intervalRef.current);
+        setCountdown(null);
+        writeKeyToSheets(sheetsUrl, sheetsKey, getLatest());
+        setIsDirty(false);
+      } else {
+        setCountdown(n);
+      }
+    }, 1000);
+  }, [sheetsUrl, sheetsKey, getLatest]);
+
+  // Cancel timer on unmount (tab switch)
+  useEffect(() => () => clearInterval(intervalRef.current), []);
+
+  return { isDirty, countdown, markDirty, handleSave };
+}
+
+function SaveBar({ isDirty, countdown, onSave }) {
+  if (!onSave) return null;
+  const isActive  = isDirty || countdown !== null;
+  const label = countdown !== null ? `⟳ ${countdown} 秒后保存…`
+              : isDirty            ? '💾 保存到 Sheets'
+                                   : '✓ 已保存';
+  return (
+    <div className="px-4 pt-2 pb-3 bg-white border-t border-slate-100">
+      <button
+        onClick={onSave}
+        disabled={!isActive}
+        className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-all ${
+          countdown !== null ? 'bg-amber-100 text-amber-700'
+          : isDirty           ? 'bg-indigo-600 text-white shadow-sm'
+                              : 'bg-slate-100 text-slate-400 cursor-default'
+        }`}
+      >
+        {label}
+      </button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 //  MEMBER COLOURS
 // ═══════════════════════════════════════════════════════════
 const MEMBER_COLORS = [
@@ -510,19 +573,25 @@ function LoginScreen({ members, onLogin, onAddMember }) {
 // ═══════════════════════════════════════════════════════════
 //  MEMBERS MANAGER (tab)
 // ═══════════════════════════════════════════════════════════
-function MembersManager({ members, setMembers }) {
+function MembersManager({ members, setMembers, sheetsUrl }) {
   const { currentMember } = useApp();
   const [creating, setCreating] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null);
 
+  const membersRef = useRef(members);
+  useEffect(() => { membersRef.current = members; }, [members]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_members', () => membersRef.current);
+
   const handleAdd = (m) => {
     setMembers((ms) => [...ms, m]);
+    markDirty();
     setCreating(false);
   };
 
   const handleDelete = (id) => {
     if (id === currentMember?.id) return; // can't delete yourself
     setMembers((ms) => ms.filter((m) => m.id !== id));
+    markDirty();
     setConfirmDel(null);
   };
 
@@ -577,6 +646,8 @@ function MembersManager({ members, setMembers }) {
           <p className="text-sm">暂无成员</p>
         </div>
       )}
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -670,7 +741,7 @@ function SettingsModal({ sheetsUrl, onSave, onClose }) {
 // ═══════════════════════════════════════════════════════════
 //  HEADER
 // ═══════════════════════════════════════════════════════════
-function Header({ tab, syncStatus, lastSync, isDirty, saveCountdown, onSave, onExport, onImport, onSettings, onRefresh, onLogout }) {
+function Header({ tab, syncStatus, lastSync, onExport, onImport, onSettings, onRefresh, onLogout }) {
   const { currentMember } = useApp();
   const [showUser, setShowUser] = useState(false);
 
@@ -681,31 +752,9 @@ function Header({ tab, syncStatus, lastSync, isDirty, saveCountdown, onSave, onE
         <p className="text-base font-bold text-slate-800 leading-tight">{TAB_TITLE[tab]}</p>
       </div>
       <div className="flex items-center gap-2">
-        {/* Save button — replaces simple SyncPill when Sheets is connected */}
-        {onSave ? (
-          <button
-            onClick={saveCountdown !== null ? onSave : (isDirty ? onSave : onRefresh)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-              saveCountdown !== null
-                ? 'bg-amber-100 text-amber-700'
-                : isDirty
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-slate-100 text-slate-500'
-            }`}
-          >
-            {saveCountdown !== null ? (
-              <><Loader size={11} className="animate-spin"/>{saveCountdown}s 后保存</>
-            ) : isDirty ? (
-              <>● 保存</>
-            ) : (
-              <SyncPill status={syncStatus} lastSync={lastSync}/>
-            )}
-          </button>
-        ) : (
-          <button onClick={onRefresh} className="flex items-center gap-1 px-2 py-1 rounded-full hover:bg-slate-50">
-            <SyncPill status={syncStatus} lastSync={lastSync} />
-          </button>
-        )}
+        <button onClick={onRefresh} className="flex items-center gap-1 px-2 py-1 rounded-full hover:bg-slate-50">
+          <SyncPill status={syncStatus} lastSync={lastSync} />
+        </button>
         <button onClick={onExport} title="导出备份" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200">
           <Download size={14} />
         </button>
@@ -941,6 +990,10 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
   const [filter, setFilter] = useState('all');
   const fileRef = useRef();
 
+  const dataRef = useRef(stripPreviews(files));
+  useEffect(() => { dataRef.current = stripPreviews(files); }, [files]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_files', () => dataRef.current);
+
   const handleUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return;
     e.target.value = '';
@@ -953,6 +1006,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
       status: 'scanning', ocr: { supplier: '', contact: '', price: '', moq: '' },
       preview: URL.createObjectURL(file), driveUrl: null,
     }, ...f]);
+    markDirty();
 
     // Compress image once; use for both Gemini and Drive
     const { base64, mimeType, dataUrl } = await compressImage(file);
@@ -972,6 +1026,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
       ? { ...x, status: 'done', ocr, preview: dataUrl }
       : x
     ));
+    markDirty();
 
     // Poll for Drive URL in background (Apps Script writes it to Sheets after saving)
     if (sheetsUrl) {
@@ -1043,7 +1098,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                       本地
                     </span>
                   )}
-                  <button onClick={()=>setFiles(fs=>fs.filter(x=>x.id!==f.id))} className="text-rose-400"><Trash2 size={14}/></button>
+                  <button onClick={()=>{setFiles(fs=>fs.filter(x=>x.id!==f.id)); markDirty();}} className="text-rose-400"><Trash2 size={14}/></button>
                 </div>
               </div>
               {f.status === 'scanning' && (
@@ -1106,6 +1161,8 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
           ))}
         </div>
       )}
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1113,18 +1170,23 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  PRODUCT BENCHMARKING
 // ═══════════════════════════════════════════════════════════
-function ProductBenchmark({ products, setProducts }) {
+function ProductBenchmark({ products, setProducts, sheetsUrl }) {
   const [showAdd,setShowAdd]=useState(false);
   const [expanded,setExpanded]=useState(null);
   const [np,setNp]=useState({name:'',supName:'',cost:'',moq:'',shopee:'',lazada:''});
 
+  const dataRef = useRef(products);
+  useEffect(() => { dataRef.current = products; }, [products]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_products', () => dataRef.current);
+
   const addProduct=()=>{
     if(!np.name.trim())return;
     setProducts(ps=>[{id:Date.now(),name:np.name.trim(),suppliers:[{id:1,name:np.supName||'待命名供应商',cost:+np.cost||0,moq:+np.moq||0,shopee:+np.shopee||0,lazada:+np.lazada||0}]},...ps]);
+    markDirty();
     setNp({name:'',supName:'',cost:'',moq:'',shopee:'',lazada:''});setShowAdd(false);
   };
-  const updSup=(pid,sid,k,v)=>setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:p.suppliers.map(s=>s.id!==sid?s:{...s,[k]:parseFloat(v)||0})}));
-  const addSup=(pid)=>setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:[...p.suppliers,{id:Date.now(),name:'新供应商',cost:0,moq:0,shopee:p.suppliers[0]?.shopee||0,lazada:p.suppliers[0]?.lazada||0}]}));
+  const updSup=(pid,sid,k,v)=>{setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:p.suppliers.map(s=>s.id!==sid?s:{...s,[k]:parseFloat(v)||0})})); markDirty();};
+  const addSup=(pid)=>{setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:[...p.suppliers,{id:Date.now(),name:'新供应商',cost:0,moq:0,shopee:p.suppliers[0]?.shopee||0,lazada:p.suppliers[0]?.lazada||0}]})); markDirty();};
 
   return (
     <div className="p-4 space-y-4">
@@ -1160,7 +1222,7 @@ function ProductBenchmark({ products, setProducts }) {
                 <div><p className="font-bold text-slate-800">{prod.name}</p><p className="text-xs text-slate-400">{prod.suppliers.length} 个货源</p></div>
                 <div className="flex gap-2 items-center">
                   <button onClick={()=>setExpanded(open?null:prod.id)} className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg font-medium">{open?'收起':'详情'}</button>
-                  <button onClick={()=>setProducts(ps=>ps.filter(p=>p.id!==prod.id))} className="text-rose-400"><Trash2 size={15}/></button>
+                  <button onClick={()=>{setProducts(ps=>ps.filter(p=>p.id!==prod.id)); markDirty();}} className="text-rose-400"><Trash2 size={15}/></button>
                 </div>
               </div>
               {best&&(<div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
@@ -1203,6 +1265,8 @@ function ProductBenchmark({ products, setProducts }) {
           </Card>
         );
       })}
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1210,16 +1274,21 @@ function ProductBenchmark({ products, setProducts }) {
 // ═══════════════════════════════════════════════════════════
 //  EXPENSE TRACKER  (multi-member split)
 // ═══════════════════════════════════════════════════════════
-function ExpenseTracker({ expenses, setExpenses, members }) {
+function ExpenseTracker({ expenses, setExpenses, members, sheetsUrl }) {
   const { currentMember } = useApp();
   const today = new Date().toISOString().slice(0,10);
   const [showAdd,setShowAdd] = useState(false);
   const [form,setForm] = useState({desc:'',amount:'',cat:'food',by:currentMember?.id||'',date:today});
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
+  const dataRef = useRef(expenses);
+  useEffect(() => { dataRef.current = expenses; }, [expenses]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_expenses', () => dataRef.current);
+
   const add = () => {
     if(!form.desc.trim()||!form.amount) return;
     setExpenses(es=>[...es,{id:Date.now(),...form,amount:parseFloat(form.amount)}]);
+    markDirty();
     setForm({desc:'',amount:'',cat:'food',by:currentMember?.id||'',date:today});
     setShowAdd(false);
   };
@@ -1355,12 +1424,14 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
               </div>
               <div className="text-right flex-shrink-0">
                 <p className="font-bold text-slate-800 text-sm">RM {e.amount}</p>
-                <button onClick={()=>setExpenses(es=>es.filter(x=>x.id!==e.id))} className="text-xs text-rose-400">删除</button>
+                <button onClick={()=>{setExpenses(es=>es.filter(x=>x.id!==e.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
               </div>
             </div>
           );
         })}
       </div>
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1368,15 +1439,21 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
 // ═══════════════════════════════════════════════════════════
 //  SUPPLIER RATING
 // ═══════════════════════════════════════════════════════════
-function SupplierRating({ suppliers, setSuppliers }) {
+function SupplierRating({ suppliers, setSuppliers, sheetsUrl }) {
   const today = new Date().toISOString().slice(0,10);
   const [showAdd,setShowAdd]=useState(false);
   const [sortBy,setSortBy]=useState('avg');
   const [form,setForm]=useState({name:'',loc:'',date:today,notes:'',scale:3,speed:3,quality:3,coop:3});
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
+
+  const dataRef = useRef(suppliers);
+  useEffect(() => { dataRef.current = suppliers; }, [suppliers]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_suppliers', () => dataRef.current);
+
   const add=()=>{
     if(!form.name.trim())return;
     setSuppliers(ss=>[...ss,{id:Date.now(),...form}]);
+    markDirty();
     setForm({name:'',loc:'',date:today,notes:'',scale:3,speed:3,quality:3,coop:3});setShowAdd(false);
   };
   const sorted=[...suppliers].sort((a,b)=>{
@@ -1385,7 +1462,7 @@ function SupplierRating({ suppliers, setSuppliers }) {
     if(sortBy==='coop')return b.coop-a.coop;
     return 0;
   });
-  const updRating=(id,k,v)=>setSuppliers(ss=>ss.map(s=>s.id===id?{...s,[k]:v}:s));
+  const updRating=(id,k,v)=>{setSuppliers(ss=>ss.map(s=>s.id===id?{...s,[k]:v}:s)); markDirty();};
   const DIMS=[['scale','📏 规模'],['speed','⚡ 响应速度'],['quality','💎 产品质量'],['coop','🤝 配合度']];
 
   return (
@@ -1449,10 +1526,12 @@ function SupplierRating({ suppliers, setSuppliers }) {
           </div>
           {s.notes&&<div className="bg-blue-50 rounded-xl p-2.5 text-xs text-slate-600 mb-2">📝 {s.notes}</div>}
           <div className="flex justify-end">
-            <button onClick={()=>setSuppliers(ss=>ss.filter(x=>x.id!==s.id))} className="text-xs text-rose-400">删除</button>
+            <button onClick={()=>{setSuppliers(ss=>ss.filter(x=>x.id!==s.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
           </div>
         </Card>
       ))}
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1460,9 +1539,14 @@ function SupplierRating({ suppliers, setSuppliers }) {
 // ═══════════════════════════════════════════════════════════
 //  FINANCIAL CALCULATOR
 // ═══════════════════════════════════════════════════════════
-function FinancialCalculator({ calc, setCalc }) {
+function FinancialCalculator({ calc, setCalc, sheetsUrl }) {
   const {sell,cost,ship,fee,ads}=calc;
-  const upd=(k,v)=>setCalc(c=>({...c,[k]:parseFloat(v)||0}));
+
+  const dataRef = useRef(calc);
+  useEffect(() => { dataRef.current = calc; }, [calc]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_calc', () => dataRef.current);
+
+  const upd=(k,v)=>{setCalc(c=>({...c,[k]:parseFloat(v)||0})); markDirty();};
   const feeCost=sell*fee/100;
   const netProfit=sell-cost-ship-feeCost-ads;
   const margin=sell>0?(netProfit/sell)*100:0;
@@ -1510,6 +1594,8 @@ function FinancialCalculator({ calc, setCalc }) {
           </div>
         ))}
       </Card>
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1517,15 +1603,20 @@ function FinancialCalculator({ calc, setCalc }) {
 // ═══════════════════════════════════════════════════════════
 //  GOALS CHECKLIST  (member-aware)
 // ═══════════════════════════════════════════════════════════
-function GoalsChecklist({ goals, setGoals, members }) {
+function GoalsChecklist({ goals, setGoals, members, sheetsUrl }) {
   const { currentMember } = useApp();
   const [showAdd,setShowAdd]=useState(false);
   const [form,setForm]=useState({title:'',phase:'register',by:currentMember?.id||''});
 
-  const toggle=(id)=>setGoals(gs=>gs.map(g=>g.id===id?{...g,done:!g.done}:g));
+  const dataRef = useRef(goals);
+  useEffect(() => { dataRef.current = goals; }, [goals]);
+  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_goals', () => dataRef.current);
+
+  const toggle=(id)=>{setGoals(gs=>gs.map(g=>g.id===id?{...g,done:!g.done}:g)); markDirty();};
   const add=()=>{
     if(!form.title.trim())return;
     setGoals(gs=>[...gs,{id:Date.now(),...form,done:false}]);
+    markDirty();
     setForm({title:'',phase:'register',by:currentMember?.id||''});
     setShowAdd(false);
   };
@@ -1621,7 +1712,7 @@ function GoalsChecklist({ goals, setGoals, members }) {
                         <p className="text-xs text-slate-400">{responsible.name}</p>
                       </div>
                     </div>
-                    <button onClick={e=>{e.stopPropagation();setGoals(gs=>gs.filter(x=>x.id!==g.id));}} className="text-rose-300 flex-shrink-0">
+                    <button onClick={e=>{e.stopPropagation();setGoals(gs=>gs.filter(x=>x.id!==g.id)); markDirty();}} className="text-rose-300 flex-shrink-0">
                       <X size={14}/>
                     </button>
                   </div>
@@ -1631,6 +1722,8 @@ function GoalsChecklist({ goals, setGoals, members }) {
           </div>
         );
       })}
+
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
     </div>
   );
 }
@@ -1765,67 +1858,8 @@ export default function App() {
 
   const sheetsUrlRef   = useRef(sheetsUrl);
   const syncBlockedRef = useRef(true);
-  const syncTimerRef   = useRef(null);
-  const dataRef        = useRef({});
 
   useEffect(() => { sheetsUrlRef.current = sheetsUrl; }, [sheetsUrl]);
-
-  useEffect(() => {
-    dataRef.current = {
-      rn_members:   members,
-      rn_files:     stripPreviews(files),
-      rn_products:  products,
-      rn_expenses:  expenses,
-      rn_suppliers: suppliers,
-      rn_goals:     goals,
-      rn_messages:  messages,
-      rn_calc:      calc,
-    };
-  }, [members, files, products, expenses, suppliers, goals, messages, calc]);
-
-  // Pending write guard — auto-sync read skips while true
-  const pendingWriteRef = useRef(false);
-  const countdownRef    = useRef(null);
-
-  // ── Dirty tracking ─────────────────────────────────────
-  // Mark unsaved whenever local state changes, but NOT during a remote read
-  const [isDirty,       setIsDirty]       = useState(false);
-  const [saveCountdown, setSaveCountdown] = useState(null); // null | 1-5
-
-  useEffect(() => {
-    if (syncBlockedRef.current) return; // remote read in progress — not our change
-    setIsDirty(true);
-  }, [members, files, products, expenses, suppliers, goals, messages, calc]); // eslint-disable-line
-
-  // ── Save handler ────────────────────────────────────────
-  // Each click (re)starts a 5-second countdown. After it hits 0,
-  // data is written to Sheets. pendingWriteRef blocks auto-sync
-  // reads until Apps Script has had time to process the write.
-  const handleSave = useCallback(() => {
-    if (!sheetsUrlRef.current) return;
-    clearInterval(countdownRef.current);
-    pendingWriteRef.current = true;
-    setSyncStatus('syncing');
-
-    let n = 5;
-    setSaveCountdown(n);
-
-    countdownRef.current = setInterval(() => {
-      n -= 1;
-      if (n <= 0) {
-        clearInterval(countdownRef.current);
-        setSaveCountdown(null);
-        writeAllToSheets(sheetsUrlRef.current, dataRef.current);
-        setIsDirty(false);
-        setSyncStatus('synced');
-        setLastSync(new Date());
-        // Keep reads blocked for 5 s while Apps Script processes
-        setTimeout(() => { pendingWriteRef.current = false; }, 5000);
-      } else {
-        setSaveCountdown(n);
-      }
-    }, 1000);
-  }, []);
 
   const applyRemoteData = useCallback((data) => {
     if (data.rn_members)   setMembers(data.rn_members);
@@ -1846,7 +1880,6 @@ export default function App() {
       const data = await readAllFromSheets(sheetsUrlRef.current);
       applyRemoteData(data);
       setSyncStatus('synced'); setLastSync(new Date());
-      setIsDirty(false);
       setToast('✅ 已从 Google Sheets 加载最新数据');
     } catch (err) {
       console.warn('[Sheets] Load failed:', err.message);
@@ -1859,31 +1892,29 @@ export default function App() {
 
   useEffect(() => { loadFromSheets(); }, [loadFromSheets]);
 
-  // ── Global 10 s auto-sync ─────────────────────────────
-  // Every 10 s, pull all data from Sheets regardless of active tab.
-  // Guard ref prevents overlapping requests.
-  const autoSyncRef = useRef(false);
+  // ── Chat-only 10 s polling ────────────────────────────
+  // Only messages are auto-refreshed. All other modules use
+  // their own Save buttons and do not auto-pull from Sheets.
+  const chatPollRef = useRef(false);
 
   useEffect(() => {
     if (!sheetsUrl) return;
-
     const tick = async () => {
-      // Skip if another request is in flight, or if we have local edits that
-      // haven't finished writing to Sheets yet (prevents remote overwrite).
-      if (autoSyncRef.current || pendingWriteRef.current) return;
-      autoSyncRef.current = true;
+      if (chatPollRef.current) return;
+      chatPollRef.current = true;
       try {
         const data = await readAllFromSheets(sheetsUrl);
-        syncBlockedRef.current = true;
-        applyRemoteData(data);
-        setTimeout(() => { syncBlockedRef.current = false; }, 200);
-      } catch { /* silent — will retry next tick */ }
-      autoSyncRef.current = false;
+        if (Array.isArray(data?.rn_messages)) {
+          syncBlockedRef.current = true;
+          setMessages(data.rn_messages);
+          setTimeout(() => { syncBlockedRef.current = false; }, 200);
+        }
+      } catch { /* silent */ }
+      chatPollRef.current = false;
     };
-
     const id = setInterval(tick, 10000);
     return () => clearInterval(id);
-  }, [sheetsUrl, applyRemoteData]);
+  }, [sheetsUrl]); // eslint-disable-line
 
   const go = (t) => { setTab(t); setMoreOpen(false); };
 
@@ -1957,8 +1988,6 @@ export default function App() {
 
         <Header
           tab={tab} syncStatus={syncStatus} lastSync={lastSync}
-          isDirty={isDirty} saveCountdown={saveCountdown}
-          onSave={sheetsUrl ? handleSave : null}
           onExport={handleExport} onImport={handleImport}
           onSettings={()=>setShowSettings(true)} onRefresh={loadFromSheets}
           onLogout={handleLogout}
@@ -1967,13 +1996,13 @@ export default function App() {
         <main className="flex-1 overflow-y-auto" style={{paddingBottom:tab==='chat'?0:'4.5rem'}}>
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
           {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
-          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
-          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members}/>}
-          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
-          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
-          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
+          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts} sheetsUrl={sheetsUrl}/>}
+          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members} sheetsUrl={sheetsUrl}/>}
+          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers} sheetsUrl={sheetsUrl}/>}
+          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc} sheetsUrl={sheetsUrl}/>}
+          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members} sheetsUrl={sheetsUrl}/>}
           {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={!!sheetsUrl}/>}
-          {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
+          {tab==='members'    && <MembersManager members={members} setMembers={setMembers} sheetsUrl={sheetsUrl}/>}
         </main>
 
         <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen}/>
