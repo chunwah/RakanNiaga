@@ -670,7 +670,7 @@ function SettingsModal({ sheetsUrl, onSave, onClose }) {
 // ═══════════════════════════════════════════════════════════
 //  HEADER
 // ═══════════════════════════════════════════════════════════
-function Header({ tab, syncStatus, lastSync, onExport, onImport, onSettings, onRefresh, onLogout }) {
+function Header({ tab, syncStatus, lastSync, isDirty, saveCountdown, onSave, onExport, onImport, onSettings, onRefresh, onLogout }) {
   const { currentMember } = useApp();
   const [showUser, setShowUser] = useState(false);
 
@@ -681,9 +681,31 @@ function Header({ tab, syncStatus, lastSync, onExport, onImport, onSettings, onR
         <p className="text-base font-bold text-slate-800 leading-tight">{TAB_TITLE[tab]}</p>
       </div>
       <div className="flex items-center gap-2">
-        <button onClick={onRefresh} className="flex items-center gap-1 px-2 py-1 rounded-full hover:bg-slate-50">
-          <SyncPill status={syncStatus} lastSync={lastSync} />
-        </button>
+        {/* Save button — replaces simple SyncPill when Sheets is connected */}
+        {onSave ? (
+          <button
+            onClick={saveCountdown !== null ? onSave : (isDirty ? onSave : onRefresh)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+              saveCountdown !== null
+                ? 'bg-amber-100 text-amber-700'
+                : isDirty
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-500'
+            }`}
+          >
+            {saveCountdown !== null ? (
+              <><Loader size={11} className="animate-spin"/>{saveCountdown}s 后保存</>
+            ) : isDirty ? (
+              <>● 保存</>
+            ) : (
+              <SyncPill status={syncStatus} lastSync={lastSync}/>
+            )}
+          </button>
+        ) : (
+          <button onClick={onRefresh} className="flex items-center gap-1 px-2 py-1 rounded-full hover:bg-slate-50">
+            <SyncPill status={syncStatus} lastSync={lastSync} />
+          </button>
+        )}
         <button onClick={onExport} title="导出备份" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200">
           <Download size={14} />
         </button>
@@ -1761,28 +1783,49 @@ export default function App() {
     };
   }, [members, files, products, expenses, suppliers, goals, messages, calc]);
 
-  // True while local changes haven't been confirmed written to Sheets yet.
-  // Auto-sync read is skipped while this is set, preventing remote overwrites.
+  // Pending write guard — auto-sync read skips while true
   const pendingWriteRef = useRef(false);
+  const countdownRef    = useRef(null);
 
-  const scheduleSync = useCallback(() => {
-    if (syncBlockedRef.current || !sheetsUrlRef.current) return;
-    clearTimeout(syncTimerRef.current);
-    pendingWriteRef.current = true;   // local edits are ahead of Sheets
+  // ── Dirty tracking ─────────────────────────────────────
+  // Mark unsaved whenever local state changes, but NOT during a remote read
+  const [isDirty,       setIsDirty]       = useState(false);
+  const [saveCountdown, setSaveCountdown] = useState(null); // null | 1-5
+
+  useEffect(() => {
+    if (syncBlockedRef.current) return; // remote read in progress — not our change
+    setIsDirty(true);
+  }, [members, files, products, expenses, suppliers, goals, messages, calc]); // eslint-disable-line
+
+  // ── Save handler ────────────────────────────────────────
+  // Each click (re)starts a 5-second countdown. After it hits 0,
+  // data is written to Sheets. pendingWriteRef blocks auto-sync
+  // reads until Apps Script has had time to process the write.
+  const handleSave = useCallback(() => {
+    if (!sheetsUrlRef.current) return;
+    clearInterval(countdownRef.current);
+    pendingWriteRef.current = true;
     setSyncStatus('syncing');
-    syncTimerRef.current = setTimeout(() => {
-      writeAllToSheets(sheetsUrlRef.current, dataRef.current);
-      // Wait 5 s after the write fires — enough for Apps Script to store it —
-      // then allow auto-sync reads again.
-      setTimeout(() => {
+
+    let n = 5;
+    setSaveCountdown(n);
+
+    countdownRef.current = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(countdownRef.current);
+        setSaveCountdown(null);
+        writeAllToSheets(sheetsUrlRef.current, dataRef.current);
+        setIsDirty(false);
         setSyncStatus('synced');
         setLastSync(new Date());
-        pendingWriteRef.current = false;
-      }, 5000);
-    }, 800);
+        // Keep reads blocked for 5 s while Apps Script processes
+        setTimeout(() => { pendingWriteRef.current = false; }, 5000);
+      } else {
+        setSaveCountdown(n);
+      }
+    }, 1000);
   }, []);
-
-  useEffect(() => { scheduleSync(); }, [members, files, products, expenses, suppliers, goals, messages, calc, scheduleSync]);
 
   const applyRemoteData = useCallback((data) => {
     if (data.rn_members)   setMembers(data.rn_members);
@@ -1803,6 +1846,7 @@ export default function App() {
       const data = await readAllFromSheets(sheetsUrlRef.current);
       applyRemoteData(data);
       setSyncStatus('synced'); setLastSync(new Date());
+      setIsDirty(false);
       setToast('✅ 已从 Google Sheets 加载最新数据');
     } catch (err) {
       console.warn('[Sheets] Load failed:', err.message);
@@ -1913,6 +1957,8 @@ export default function App() {
 
         <Header
           tab={tab} syncStatus={syncStatus} lastSync={lastSync}
+          isDirty={isDirty} saveCountdown={saveCountdown}
+          onSave={sheetsUrl ? handleSave : null}
           onExport={handleExport} onImport={handleImport}
           onSettings={()=>setShowSettings(true)} onRefresh={loadFromSheets}
           onLogout={handleLogout}
