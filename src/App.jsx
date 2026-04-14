@@ -984,8 +984,11 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
           {shown.map(f=>(
             <Card key={f.id} className="overflow-hidden">
               <div className="p-3 flex items-center gap-3">
-                {f.preview ? <img src={f.preview} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0"/>
-                  : <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center flex-shrink-0"><FileText size={20} className="text-slate-400"/></div>}
+                {(f.preview || f.driveUrl) ? (
+                  <img src={f.preview || f.driveUrl} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0"/>
+                ) : (
+                  <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center flex-shrink-0"><FileText size={20} className="text-slate-400"/></div>
+                )}
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-slate-800 text-sm truncate">{f.name}</p>
                   <p className="text-xs text-slate-400">{f.date}</p>
