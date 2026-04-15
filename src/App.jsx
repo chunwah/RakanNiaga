@@ -805,14 +805,16 @@ const MORE_ITEMS = [
   { id: 'members',    Icon: Users,         label: '成员管理' },
 ];
 
-function BottomNav({ active, go, moreOpen, setMoreOpen }) {
+function BottomNav({ active, go, moreOpen, setMoreOpen, unreadCount = 0 }) {
   const main = [
     { id: 'dashboard', Icon: Home,        label: '首页' },
     { id: 'files',     Icon: FileText,    label: '文件' },
     { id: 'products',  Icon: ShoppingBag, label: '选品' },
     { id: 'expenses',  Icon: Wallet,      label: '记账' },
   ];
-  const inMore = MORE_ITEMS.some((m) => m.id === active);
+  const inMore     = MORE_ITEMS.some((m) => m.id === active);
+  const showBadge  = unreadCount > 0 && active !== 'chat';
+  const badgeLabel = unreadCount > 9 ? '9+' : String(unreadCount);
   return (
     <>
       {moreOpen && <div className="fixed inset-0 z-20" onClick={() => setMoreOpen(false)} />}
@@ -821,8 +823,15 @@ function BottomNav({ active, go, moreOpen, setMoreOpen }) {
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-3 grid grid-cols-5 gap-1">
             {MORE_ITEMS.map(({ id, Icon, label }) => (
               <button key={id} onClick={() => { go(id); setMoreOpen(false); }}
-                className={`flex flex-col items-center gap-1 py-2.5 px-1 rounded-xl ${active === id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
-                <Icon size={20} className={active === id ? 'text-indigo-600' : 'text-slate-500'} />
+                className={`flex flex-col items-center gap-1 py-2.5 px-1 rounded-xl relative ${active === id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
+                <div className="relative">
+                  <Icon size={20} className={active === id ? 'text-indigo-600' : 'text-slate-500'} />
+                  {id === 'chat' && showBadge && (
+                    <span className="absolute -top-1 -right-2 min-w-[15px] h-[15px] bg-rose-500 rounded-full text-white text-[9px] font-bold flex items-center justify-center px-0.5 leading-none">
+                      {badgeLabel}
+                    </span>
+                  )}
+                </div>
                 <span className={`text-xs ${active === id ? 'text-indigo-600 font-semibold' : 'text-slate-500'}`}>{label}</span>
               </button>
             ))}
@@ -836,8 +845,15 @@ function BottomNav({ active, go, moreOpen, setMoreOpen }) {
             <span className={`text-xs ${active === id ? 'text-indigo-600 font-semibold' : 'text-slate-400'}`}>{label}</span>
           </button>
         ))}
-        <button onClick={() => setMoreOpen(o=>!o)} className="flex-1 flex flex-col items-center gap-1 py-2.5">
-          <MoreHorizontal size={21} className={(moreOpen || inMore) ? 'text-indigo-600' : 'text-slate-400'} />
+        <button onClick={() => setMoreOpen(o=>!o)} className="flex-1 flex flex-col items-center gap-1 py-2.5 relative">
+          <div className="relative">
+            <MoreHorizontal size={21} className={(moreOpen || inMore) ? 'text-indigo-600' : 'text-slate-400'} />
+            {showBadge && (
+              <span className="absolute -top-1 -right-2 min-w-[15px] h-[15px] bg-rose-500 rounded-full text-white text-[9px] font-bold flex items-center justify-center px-0.5 leading-none">
+                {badgeLabel}
+              </span>
+            )}
+          </div>
           <span className={`text-xs ${(moreOpen || inMore) ? 'text-indigo-600 font-semibold' : 'text-slate-400'}`}>更多</span>
         </button>
       </nav>
@@ -1897,6 +1913,25 @@ export default function App() {
   // their own Save buttons and do not auto-pull from Sheets.
   const chatPollRef = useRef(false);
 
+  // ── Chat notification state ────────────────────────────
+  const [unreadCount, setUnreadCount] = useState(0);
+  const lastSeenMsgIdRef = useRef(0);
+  const tabRef           = useRef('dashboard');
+  const membersRef       = useRef(members);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  useEffect(() => { membersRef.current = members; }, [members]);
+
+  // Request browser notification permission + seed lastSeen from localStorage
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    const saved = lsGet('rn_messages', []);
+    if (saved.length > 0) {
+      lastSeenMsgIdRef.current = Math.max(...saved.map(m => m.id));
+    }
+  }, []); // eslint-disable-line
+
   useEffect(() => {
     if (!sheetsUrl) return;
     const tick = async () => {
@@ -1906,7 +1941,31 @@ export default function App() {
         const data = await readAllFromSheets(sheetsUrl);
         if (Array.isArray(data?.rn_messages)) {
           syncBlockedRef.current = true;
-          setMessages(data.rn_messages);
+
+          // ── Detect new messages & fire notifications ──────
+          const incoming = data.rn_messages;
+          const newMsgs  = incoming.filter(m => m.id > lastSeenMsgIdRef.current);
+          if (newMsgs.length > 0 && tabRef.current !== 'chat') {
+            setUnreadCount(c => c + newMsgs.length);
+            if ('Notification' in window && Notification.permission === 'granted') {
+              newMsgs.forEach(m => {
+                const sender = membersRef.current.find(mb => mb.id === m.from);
+                try {
+                  new Notification(sender?.name || '新消息', {
+                    body: m.text,
+                    icon: '/icon-192.png',
+                    tag:  'rn-chat-' + m.id,
+                  });
+                } catch { /* ignore notification errors */ }
+              });
+            }
+          }
+          // Always advance lastSeen so we don't re-notify on the next poll
+          if (incoming.length > 0) {
+            lastSeenMsgIdRef.current = Math.max(...incoming.map(m => m.id));
+          }
+
+          setMessages(incoming);
           setTimeout(() => { syncBlockedRef.current = false; }, 200);
         }
       } catch { /* silent */ }
@@ -1916,7 +1975,18 @@ export default function App() {
     return () => clearInterval(id);
   }, [sheetsUrl]); // eslint-disable-line
 
-  const go = (t) => { setTab(t); setMoreOpen(false); };
+  const go = (t) => {
+    setTab(t);
+    setMoreOpen(false);
+    if (t === 'chat') {
+      setUnreadCount(0);
+      // Mark all current messages as seen
+      setMessages(prev => {
+        if (prev.length > 0) lastSeenMsgIdRef.current = Math.max(...prev.map(m => m.id));
+        return prev;
+      });
+    }
+  };
 
   const handleSaveSettings = (url) => {
     setSheetsUrl(url); sheetsUrlRef.current = url;
@@ -2005,7 +2075,7 @@ export default function App() {
           {tab==='members'    && <MembersManager members={members} setMembers={setMembers} sheetsUrl={sheetsUrl}/>}
         </main>
 
-        <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen}/>
+        <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen} unreadCount={unreadCount}/>
       </div>
     </AppCtx.Provider>
   );
