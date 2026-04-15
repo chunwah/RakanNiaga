@@ -1747,7 +1747,7 @@ function GoalsChecklist({ goals, setGoals, members, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  PARTNER CHAT  (member-aware, no sender toggle)
 // ═══════════════════════════════════════════════════════════
-function PartnerChat({ messages, setMessages, members, isLive }) {
+function PartnerChat({ messages, setMessages, members, isLive, sheetsUrl }) {
   const { currentMember } = useApp();
   const [input, setInput] = useState('');
   const bottomRef = useRef();
@@ -1756,9 +1756,13 @@ function PartnerChat({ messages, setMessages, members, isLive }) {
 
   const send = () => {
     if (!input.trim() || !currentMember) return;
-    const now = new Date();
-    const time = fmtTime(now);
-    setMessages(ms=>[...ms,{id:Date.now(),from:currentMember.id,text:input.trim(),time}]);
+    const newMsg = { id: Date.now(), from: currentMember.id, text: input.trim(), time: fmtTime(new Date()) };
+    setMessages(ms => {
+      const updated = [...ms, newMsg];
+      // Immediately persist to Sheets so partners see it right away
+      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_messages', updated);
+      return updated;
+    });
     setInput('');
   };
 
@@ -1941,10 +1945,18 @@ export default function App() {
         const data = await readAllFromSheets(sheetsUrl);
         if (Array.isArray(data?.rn_messages)) {
           syncBlockedRef.current = true;
+          const incoming = data.rn_messages;
+
+          // ── Merge by id: never lose locally-sent messages ─
+          setMessages(local => {
+            const byId = new Map();
+            // Remote messages first, then local — local wins on conflict
+            [...incoming, ...local].forEach(m => byId.set(m.id, m));
+            return [...byId.values()].sort((a, b) => a.id - b.id);
+          });
 
           // ── Detect new messages & fire notifications ──────
-          const incoming = data.rn_messages;
-          const newMsgs  = incoming.filter(m => m.id > lastSeenMsgIdRef.current);
+          const newMsgs = incoming.filter(m => m.id > lastSeenMsgIdRef.current);
           if (newMsgs.length > 0 && tabRef.current !== 'chat') {
             setUnreadCount(c => c + newMsgs.length);
             if ('Notification' in window && Notification.permission === 'granted') {
@@ -1965,13 +1977,12 @@ export default function App() {
             lastSeenMsgIdRef.current = Math.max(...incoming.map(m => m.id));
           }
 
-          setMessages(incoming);
           setTimeout(() => { syncBlockedRef.current = false; }, 200);
         }
       } catch { /* silent */ }
       chatPollRef.current = false;
     };
-    const id = setInterval(tick, 10000);
+    const id = setInterval(tick, 5000); // 5 s — faster for chat
     return () => clearInterval(id);
   }, [sheetsUrl]); // eslint-disable-line
 
@@ -2071,7 +2082,7 @@ export default function App() {
           {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers} sheetsUrl={sheetsUrl}/>}
           {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc} sheetsUrl={sheetsUrl}/>}
           {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members} sheetsUrl={sheetsUrl}/>}
-          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={!!sheetsUrl}/>}
+          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={!!sheetsUrl} sheetsUrl={sheetsUrl}/>}
           {tab==='members'    && <MembersManager members={members} setMembers={setMembers} sheetsUrl={sheetsUrl}/>}
         </main>
 
