@@ -663,7 +663,7 @@ function MembersManager({ members, setMembers, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  SETTINGS MODAL
 // ═══════════════════════════════════════════════════════════
-function SettingsModal({ sheetsUrl, onSave, onClose }) {
+function SettingsModal({ sheetsUrl, onSave, onClose, onImport }) {
   const [url,       setUrl]       = useState(sheetsUrl || '');
   const [testing,   setTesting]   = useState(false);
   const [testMsg,   setTestMsg]   = useState('');
@@ -740,6 +740,15 @@ function SettingsModal({ sheetsUrl, onSave, onClose }) {
             <button onClick={() => onSave(url.trim())} className="flex-1 bg-indigo-600 text-white rounded-xl py-3 text-sm font-semibold">保存</button>
             <button onClick={() => { setUrl(''); setTestMsg(''); }} className="px-4 bg-slate-100 text-slate-600 rounded-xl py-3 text-sm font-semibold">清除</button>
           </div>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2">
+            <p className="text-sm font-semibold text-slate-700">数据备份</p>
+            <label className="w-full flex items-center justify-center gap-2 border border-slate-200 bg-slate-50 text-slate-600 rounded-xl py-2.5 text-sm font-medium cursor-pointer hover:bg-slate-100 active:bg-slate-200">
+              <Upload size={15} />
+              导入备份文件（.json）
+              <input type="file" accept=".json" className="hidden" onChange={(e) => { onImport(e); onClose(); }} />
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -749,7 +758,7 @@ function SettingsModal({ sheetsUrl, onSave, onClose }) {
 // ═══════════════════════════════════════════════════════════
 //  HEADER
 // ═══════════════════════════════════════════════════════════
-function Header({ tab, syncStatus, lastSync, onExport, onImport, onSettings, onRefresh, onLogout }) {
+function Header({ tab, syncStatus, lastSync, onExport, onSettings, onRefresh, onLogout }) {
   const { currentMember } = useApp();
   const [showUser, setShowUser] = useState(false);
 
@@ -766,10 +775,9 @@ function Header({ tab, syncStatus, lastSync, onExport, onImport, onSettings, onR
         <button onClick={onExport} title="导出备份" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200">
           <Download size={14} />
         </button>
-        <label title="导入备份" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200 cursor-pointer">
+        <button onClick={onRefresh} title="立即同步" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200">
           <RefreshCw size={14} />
-          <input type="file" accept=".json" className="hidden" onChange={onImport} />
-        </label>
+        </button>
         <button onClick={onSettings} title="Sheets 设置" className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200">
           <Settings size={14} />
         </button>
@@ -2077,11 +2085,11 @@ export default function App() {
     <AppCtx.Provider value={ctx}>
       <div className="min-h-screen bg-slate-50 max-w-sm mx-auto flex flex-col relative">
         {toast && <Toast message={toast} onDone={()=>setToast(null)}/>}
-        {showSettings && <SettingsModal sheetsUrl={sheetsUrl} onSave={handleSaveSettings} onClose={()=>setShowSettings(false)}/>}
+        {showSettings && <SettingsModal sheetsUrl={sheetsUrl} onSave={handleSaveSettings} onClose={()=>setShowSettings(false)} onImport={handleImport}/>}
 
         <Header
           tab={tab} syncStatus={syncStatus} lastSync={lastSync}
-          onExport={handleExport} onImport={handleImport}
+          onExport={handleExport}
           onSettings={()=>setShowSettings(true)} onRefresh={loadFromSheets}
           onLogout={handleLogout}
         />
