@@ -583,14 +583,22 @@ function MembersManager({ members, setMembers, sheetsUrl }) {
   const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_members', () => membersRef.current);
 
   const handleAdd = (m) => {
-    setMembers((ms) => [...ms, m]);
+    setMembers(ms => {
+      const updated = [...ms, m];
+      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_members', updated);
+      return updated;
+    });
     markDirty();
     setCreating(false);
   };
 
   const handleDelete = (id) => {
     if (id === currentMember?.id) return; // can't delete yourself
-    setMembers((ms) => ms.filter((m) => m.id !== id));
+    setMembers(ms => {
+      const updated = ms.filter(m => m.id !== id);
+      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_members', updated);
+      return updated;
+    });
     markDirty();
     setConfirmDel(null);
   };
@@ -1865,7 +1873,11 @@ export default function App() {
   };
 
   const handleAddMember = (member) => {
-    setMembers(ms => [...ms, member]);
+    setMembers(ms => {
+      const updated = [...ms, member];
+      if (sheetsUrlRef.current) writeKeyToSheets(sheetsUrlRef.current, 'rn_members', updated);
+      return updated;
+    });
   };
 
   // ── Google Sheets ──────────────────────────────────────
