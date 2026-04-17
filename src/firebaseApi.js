@@ -8,13 +8,13 @@ import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, update, get } from 'firebase/database';
 
 const firebaseConfig = {
-  apiKey:            'AIzaSyCledSMSPmjBh1sC0w7SN0YL98SnuvZgvY',
-  authDomain:        'rakanniaga-9d751.firebaseapp.com',
-  databaseURL:       'https://rakanniaga-9d751-default-rtdb.asia-southeast1.firebasedatabase.app',
-  projectId:         'rakanniaga-9d751',
-  storageBucket:     'rakanniaga-9d751.firebasestorage.app',
-  messagingSenderId: '385918698667',
-  appId:             '1:385918698667:web:899d98e6da3bf2916763ee',
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL:       import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
 const app = initializeApp(firebaseConfig);
