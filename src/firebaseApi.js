@@ -21,6 +21,14 @@ const app = initializeApp(firebaseConfig);
 const db  = getDatabase(app);
 const ROOT = 'rakanniaga';
 
+// ── Empty-array sentinel ──────────────────────────────────────
+// Firebase Realtime Database converts empty arrays [] to null and
+// removes the node entirely. We store a sentinel instead so that
+// "array was cleared" can be distinguished from "key never written".
+const EMPTY_SENTINEL = { __rn_empty__: true };
+const wrap   = v => (Array.isArray(v) && v.length === 0) ? EMPTY_SENTINEL : v;
+const unwrap = v => (v && v.__rn_empty__ === true)        ? []             : v;
+
 /**
  * 订阅所有数据变化。
  * 立刻触发一次（当前快照），之后任何人写入都会实时触发。
@@ -30,7 +38,14 @@ export function subscribeToData(callback) {
   const rootRef = ref(db, ROOT);
   return onValue(
     rootRef,
-    (snap) => callback(snap.val() || {}),
+    (snap) => {
+      const raw = snap.val() || {};
+      // Unwrap any sentinel values back to empty arrays
+      const data = Object.fromEntries(
+        Object.entries(raw).map(([k, v]) => [k, unwrap(v)])
+      );
+      callback(data);
+    },
     (err) => console.warn('[Firebase] onValue error:', err.message),
   );
 }
@@ -47,7 +62,8 @@ export async function readOnce() {
  * 写入单个 key（fire-and-forget，Firebase 本身处理重试）。
  */
 export function writeKey(key, value) {
-  return update(ref(db, ROOT), { [key]: value })
+  // Wrap empty arrays so Firebase doesn't silently remove the node
+  return update(ref(db, ROOT), { [key]: wrap(value) })
     .catch(err => console.warn('[Firebase] Write failed:', key, err.message));
 }
 
