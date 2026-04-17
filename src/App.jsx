@@ -677,7 +677,7 @@ function MembersManager({ members, setMembers }) {
 // ═══════════════════════════════════════════════════════════
 //  SETTINGS MODAL
 // ═══════════════════════════════════════════════════════════
-function SettingsModal({ sheetsUrl, onSave, onClose, onImport }) {
+function SettingsModal({ sheetsUrl, onSave, onClose, onImport, onMigrate }) {
   const [url,       setUrl]       = useState(sheetsUrl || '');
   const [testing,   setTesting]   = useState(false);
   const [testMsg,   setTestMsg]   = useState('');
@@ -719,6 +719,16 @@ function SettingsModal({ sheetsUrl, onSave, onClose, onImport }) {
               <p className="text-sm font-semibold text-emerald-800">Firebase 实时同步已启用</p>
               <p className="text-xs text-emerald-600">所有数据实时同步，无需手动刷新</p>
             </div>
+          </div>
+
+          {/* One-time migration */}
+          <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-2">
+            <p className="text-sm font-semibold text-amber-800">📦 旧数据迁移</p>
+            <p className="text-xs text-amber-700">如果你的数据还在 Google Sheets / 本地缓存，点此一键写入 Firebase。只需执行一次。</p>
+            <button onClick={() => { onMigrate(); onClose(); }}
+              className="w-full bg-amber-500 text-white rounded-xl py-2.5 text-sm font-semibold active:bg-amber-600">
+              一键迁移到 Firebase
+            </button>
           </div>
 
           <div className="bg-indigo-50 border border-indigo-100 rounded-2xl overflow-hidden">
@@ -2102,6 +2112,26 @@ export default function App() {
     setToast(url ? '✅ 图片上传 URL 已保存' : '🔌 图片上传 URL 已清除');
   };
 
+  // ── Migrate all local data → Firebase ─────────────────
+  const handleMigrateToFirebase = useCallback(async () => {
+    setToast('⏳ 正在迁移数据到 Firebase…');
+    try {
+      await Promise.all([
+        writeKey('rn_members',   members),
+        writeKey('rn_products',  products),
+        writeKey('rn_expenses',  expenses),
+        writeKey('rn_suppliers', suppliers),
+        writeKey('rn_goals',     goals),
+        writeKey('rn_messages',  messages),
+        writeKey('rn_calc',      calc),
+        writeKey('rn_files',     stripPreviews(files)),
+      ]);
+      setToast('✅ 迁移完成！所有数据已写入 Firebase');
+    } catch {
+      setToast('❌ 迁移失败，请重试');
+    }
+  }, [members, products, expenses, suppliers, goals, messages, calc, files]);
+
   // ── Export / Import / Reset ────────────────────────────
   const handleExport = () => {
     const data = { members, files: stripPreviews(files), products, expenses, suppliers, goals, messages, calc, exportedAt: new Date().toISOString() };
@@ -2158,7 +2188,7 @@ export default function App() {
       <DirtyCtx.Provider value={dirtyCtx}>
       <div className="min-h-screen bg-slate-50 max-w-sm mx-auto flex flex-col relative">
         {toast && <Toast message={toast} onDone={()=>setToast(null)}/>}
-        {showSettings && <SettingsModal sheetsUrl={sheetsUrl} onSave={handleSaveSettings} onClose={()=>setShowSettings(false)} onImport={handleImport}/>}
+        {showSettings && <SettingsModal sheetsUrl={sheetsUrl} onSave={handleSaveSettings} onClose={()=>setShowSettings(false)} onImport={handleImport} onMigrate={handleMigrateToFirebase}/>}
 
         <Header
           tab={tab} syncStatus={syncStatus} lastSync={lastSync}
