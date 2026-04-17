@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import {
   Home, FileText, ShoppingBag, Wallet, MoreHorizontal,
   Star, Calculator, CheckSquare, MessageCircle, Upload,
@@ -7,7 +7,8 @@ import {
   Wifi, WifiOff, Settings, X, Loader, Users, LogOut,
   ChevronLeft, Eye, EyeOff,
 } from 'lucide-react';
-import { readAllFromSheets, writeAllToSheets, writeKeyToSheets, uploadImageToDrive, pollDriveUrl } from './sheetsApi';
+import { uploadImageToDrive, pollDriveUrl } from './sheetsApi'; // Drive image uploads (Apps Script)
+import { subscribeToData, readOnce, writeKey, subscribeToConnection } from './firebaseApi';
 
 // ═══════════════════════════════════════════════════════════
 //  GEMINI OCR HELPERS
@@ -90,8 +91,13 @@ async function callGeminiOCR(base64, mimeType) {
 // ═══════════════════════════════════════════════════════════
 //  CONTEXT
 // ═══════════════════════════════════════════════════════════
-const AppCtx = createContext(null);
-const useApp = () => useContext(AppCtx);
+const AppCtx  = createContext(null);
+const useApp  = () => useContext(AppCtx);
+
+// DirtyCtx — tracks which Sheets keys have unsaved local changes.
+// The background poll skips any key that is currently dirty so it
+// never overwrites in-progress edits.
+const DirtyCtx = createContext(null);
 
 // ═══════════════════════════════════════════════════════════
 //  LOCAL STORAGE HELPERS
@@ -130,16 +136,20 @@ const stripPreviews = (files) => files.map((f) => ({ ...f, preview: null }));
  * - handleSave(): start/reset 5-second countdown then write
  * - getLatest: fn() returning the freshest data at write time
  */
-function useSave(sheetsUrl, sheetsKey, getLatest) {
+function useSave(sheetsKey, getLatest) {
   const [isDirty,   setIsDirty]   = useState(false);
   const [countdown, setCountdown] = useState(null);
   const intervalRef = useRef(null);
+  const dirty = useContext(DirtyCtx);
 
-  const markDirty = useCallback(() => setIsDirty(true), []);
+  const markDirty = useCallback(() => {
+    setIsDirty(true);
+    dirty?.mark(sheetsKey);
+  }, [dirty, sheetsKey]);
 
   const handleSave = useCallback(() => {
-    if (!sheetsUrl) return;
     clearInterval(intervalRef.current);
+    dirty?.mark(sheetsKey); // keep protected during countdown
     let n = 5;
     setCountdown(n);
     intervalRef.current = setInterval(() => {
@@ -147,16 +157,20 @@ function useSave(sheetsUrl, sheetsKey, getLatest) {
       if (n <= 0) {
         clearInterval(intervalRef.current);
         setCountdown(null);
-        writeKeyToSheets(sheetsUrl, sheetsKey, getLatest());
+        writeKey(sheetsKey, getLatest()); // Firebase write
         setIsDirty(false);
+        dirty?.clean(sheetsKey); // release — listener can now apply remote updates
       } else {
         setCountdown(n);
       }
     }, 1000);
-  }, [sheetsUrl, sheetsKey, getLatest]);
+  }, [sheetsKey, getLatest, dirty]);
 
-  // Cancel timer on unmount (tab switch)
-  useEffect(() => () => clearInterval(intervalRef.current), []);
+  // Cancel timer on unmount; release dirty flag so listener isn't blocked forever
+  useEffect(() => () => {
+    clearInterval(intervalRef.current);
+    dirty?.clean(sheetsKey);
+  }, []); // eslint-disable-line
 
   return { isDirty, countdown, markDirty, handleSave };
 }
@@ -573,19 +587,19 @@ function LoginScreen({ members, onLogin, onAddMember }) {
 // ═══════════════════════════════════════════════════════════
 //  MEMBERS MANAGER (tab)
 // ═══════════════════════════════════════════════════════════
-function MembersManager({ members, setMembers, sheetsUrl }) {
+function MembersManager({ members, setMembers }) {
   const { currentMember } = useApp();
   const [creating, setCreating] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null);
 
   const membersRef = useRef(members);
   useEffect(() => { membersRef.current = members; }, [members]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_members', () => membersRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_members', () => membersRef.current);
 
   const handleAdd = (m) => {
     setMembers(ms => {
       const updated = [...ms, m];
-      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_members', updated);
+      writeKey('rn_members', updated);
       return updated;
     });
     markDirty();
@@ -596,7 +610,7 @@ function MembersManager({ members, setMembers, sheetsUrl }) {
     if (id === currentMember?.id) return; // can't delete yourself
     setMembers(ms => {
       const updated = ms.filter(m => m.id !== id);
-      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_members', updated);
+      writeKey('rn_members', updated);
       return updated;
     });
     markDirty();
@@ -655,7 +669,7 @@ function MembersManager({ members, setMembers, sheetsUrl }) {
         </div>
       )}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -694,13 +708,22 @@ function SettingsModal({ sheetsUrl, onSave, onClose, onImport }) {
         <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full bg-slate-200" /></div>
         <div className="px-5 pb-6 space-y-4">
           <div className="flex items-center justify-between">
-            <p className="text-lg font-bold text-slate-800">Google Sheets 同步设置</p>
+            <p className="text-lg font-bold text-slate-800">设置</p>
             <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"><X size={16} /></button>
+          </div>
+
+          {/* Firebase status */}
+          <div className="bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3 flex items-center gap-3">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"/>
+            <div>
+              <p className="text-sm font-semibold text-emerald-800">Firebase 实时同步已启用</p>
+              <p className="text-xs text-emerald-600">所有数据实时同步，无需手动刷新</p>
+            </div>
           </div>
 
           <div className="bg-indigo-50 border border-indigo-100 rounded-2xl overflow-hidden">
             <button onClick={() => setShowSteps(s=>!s)} className="w-full flex items-center justify-between px-4 py-3">
-              <span className="text-sm font-semibold text-indigo-700">📖 部署步骤（点击展开）</span>
+              <span className="text-sm font-semibold text-indigo-700">📷 图片上传设置（可选）</span>
               <span className="text-indigo-400 text-xs">{showSteps ? '收起' : '展开'}</span>
             </button>
             {showSteps && (
@@ -712,14 +735,14 @@ function SettingsModal({ sheetsUrl, onSave, onClose, onImport }) {
                   </div>
                 ))}
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mt-2">
-                  💡 也可以在项目根目录的 .env 文件里设置 VITE_SHEETS_URL，部署时就自动连接
+                  💡 不填此 URL 也可以正常使用，只是文件中心的图片无法上传到 Google Drive
                 </p>
               </div>
             )}
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-semibold text-slate-700">Apps Script Web App URL</label>
+            <label className="text-sm font-semibold text-slate-700">Apps Script URL（图片上传用）</label>
             <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
               placeholder="https://script.google.com/macros/s/..."
               className="w-full border border-slate-200 rounded-xl px-3 py-3 text-xs outline-none focus:border-indigo-400 font-mono" />
@@ -1024,7 +1047,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
 
   const dataRef = useRef(stripPreviews(files));
   useEffect(() => { dataRef.current = stripPreviews(files); }, [files]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_files', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_files', () => dataRef.current);
 
   const handleUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -1194,7 +1217,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
         </div>
       )}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1202,14 +1225,14 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  PRODUCT BENCHMARKING
 // ═══════════════════════════════════════════════════════════
-function ProductBenchmark({ products, setProducts, sheetsUrl }) {
+function ProductBenchmark({ products, setProducts }) {
   const [showAdd,setShowAdd]=useState(false);
   const [expanded,setExpanded]=useState(null);
   const [np,setNp]=useState({name:'',supName:'',cost:'',moq:'',shopee:'',lazada:''});
 
   const dataRef = useRef(products);
   useEffect(() => { dataRef.current = products; }, [products]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_products', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_products', () => dataRef.current);
 
   const addProduct=()=>{
     if(!np.name.trim())return;
@@ -1298,7 +1321,7 @@ function ProductBenchmark({ products, setProducts, sheetsUrl }) {
         );
       })}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1306,7 +1329,7 @@ function ProductBenchmark({ products, setProducts, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  EXPENSE TRACKER  (multi-member split)
 // ═══════════════════════════════════════════════════════════
-function ExpenseTracker({ expenses, setExpenses, members, sheetsUrl }) {
+function ExpenseTracker({ expenses, setExpenses, members }) {
   const { currentMember } = useApp();
   const today = new Date().toISOString().slice(0,10);
   const [showAdd,setShowAdd] = useState(false);
@@ -1315,7 +1338,7 @@ function ExpenseTracker({ expenses, setExpenses, members, sheetsUrl }) {
 
   const dataRef = useRef(expenses);
   useEffect(() => { dataRef.current = expenses; }, [expenses]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_expenses', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_expenses', () => dataRef.current);
 
   const add = () => {
     if(!form.desc.trim()||!form.amount) return;
@@ -1463,7 +1486,7 @@ function ExpenseTracker({ expenses, setExpenses, members, sheetsUrl }) {
         })}
       </div>
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1471,7 +1494,7 @@ function ExpenseTracker({ expenses, setExpenses, members, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  SUPPLIER RATING
 // ═══════════════════════════════════════════════════════════
-function SupplierRating({ suppliers, setSuppliers, sheetsUrl }) {
+function SupplierRating({ suppliers, setSuppliers }) {
   const today = new Date().toISOString().slice(0,10);
   const [showAdd,setShowAdd]=useState(false);
   const [sortBy,setSortBy]=useState('avg');
@@ -1480,7 +1503,7 @@ function SupplierRating({ suppliers, setSuppliers, sheetsUrl }) {
 
   const dataRef = useRef(suppliers);
   useEffect(() => { dataRef.current = suppliers; }, [suppliers]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_suppliers', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_suppliers', () => dataRef.current);
 
   const add=()=>{
     if(!form.name.trim())return;
@@ -1563,7 +1586,7 @@ function SupplierRating({ suppliers, setSuppliers, sheetsUrl }) {
         </Card>
       ))}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1571,12 +1594,12 @@ function SupplierRating({ suppliers, setSuppliers, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  FINANCIAL CALCULATOR
 // ═══════════════════════════════════════════════════════════
-function FinancialCalculator({ calc, setCalc, sheetsUrl }) {
+function FinancialCalculator({ calc, setCalc }) {
   const {sell,cost,ship,fee,ads}=calc;
 
   const dataRef = useRef(calc);
   useEffect(() => { dataRef.current = calc; }, [calc]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_calc', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_calc', () => dataRef.current);
 
   const upd=(k,v)=>{setCalc(c=>({...c,[k]:parseFloat(v)||0})); markDirty();};
   const feeCost=sell*fee/100;
@@ -1627,7 +1650,7 @@ function FinancialCalculator({ calc, setCalc, sheetsUrl }) {
         ))}
       </Card>
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1635,14 +1658,14 @@ function FinancialCalculator({ calc, setCalc, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  GOALS CHECKLIST  (member-aware)
 // ═══════════════════════════════════════════════════════════
-function GoalsChecklist({ goals, setGoals, members, sheetsUrl }) {
+function GoalsChecklist({ goals, setGoals, members }) {
   const { currentMember } = useApp();
   const [showAdd,setShowAdd]=useState(false);
   const [form,setForm]=useState({title:'',phase:'register',by:currentMember?.id||''});
 
   const dataRef = useRef(goals);
   useEffect(() => { dataRef.current = goals; }, [goals]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave(sheetsUrl, 'rn_goals', () => dataRef.current);
+  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_goals', () => dataRef.current);
 
   const toggle=(id)=>{setGoals(gs=>gs.map(g=>g.id===id?{...g,done:!g.done}:g)); markDirty();};
   const add=()=>{
@@ -1755,7 +1778,7 @@ function GoalsChecklist({ goals, setGoals, members, sheetsUrl }) {
         );
       })}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={sheetsUrl ? handleSave : null}/>
+      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
   );
 }
@@ -1763,7 +1786,7 @@ function GoalsChecklist({ goals, setGoals, members, sheetsUrl }) {
 // ═══════════════════════════════════════════════════════════
 //  PARTNER CHAT  (member-aware, no sender toggle)
 // ═══════════════════════════════════════════════════════════
-function PartnerChat({ messages, setMessages, members, isLive, sheetsUrl }) {
+function PartnerChat({ messages, setMessages, members, isLive }) {
   const { currentMember } = useApp();
   const [input, setInput] = useState('');
   const bottomRef = useRef();
@@ -1776,7 +1799,7 @@ function PartnerChat({ messages, setMessages, members, isLive, sheetsUrl }) {
     setMessages(ms => {
       const updated = [...ms, newMsg];
       // Immediately persist to Sheets so partners see it right away
-      if (sheetsUrl) writeKeyToSheets(sheetsUrl, 'rn_messages', updated);
+      writeKey('rn_messages', updated);
       return updated;
     });
     setInput('');
@@ -1883,7 +1906,7 @@ export default function App() {
   const handleAddMember = (member) => {
     setMembers(ms => {
       const updated = [...ms, member];
-      if (sheetsUrlRef.current) writeKeyToSheets(sheetsUrlRef.current, 'rn_members', updated);
+      writeKey('rn_members', updated);
       return updated;
     });
   };
@@ -1897,10 +1920,11 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
 
   const sheetsUrlRef   = useRef(sheetsUrl);
-  const syncBlockedRef = useRef(true);
+  // sheetsUrlRef is still used for Google Drive image uploads in FileCenter
 
   useEffect(() => { sheetsUrlRef.current = sheetsUrl; }, [sheetsUrl]);
 
+  // Full overwrite — used only by the manual refresh button
   const applyRemoteData = useCallback((data) => {
     if (data.rn_members)   setMembers(data.rn_members);
     if (data.rn_products)  setProducts(data.rn_products);
@@ -1912,30 +1936,78 @@ export default function App() {
     if (data.rn_files)     setFiles(data.rn_files);
   }, []); // eslint-disable-line
 
+  // Manual refresh — one-time read that bypasses dirty check
   const loadFromSheets = useCallback(async () => {
-    if (!sheetsUrlRef.current) { setSyncStatus('offline'); syncBlockedRef.current = false; return; }
-    syncBlockedRef.current = true;
     setSyncStatus('loading');
     try {
-      const data = await readAllFromSheets(sheetsUrlRef.current);
+      const data = await readOnce();
       applyRemoteData(data);
       setSyncStatus('synced'); setLastSync(new Date());
-      setToast('✅ 已从 Google Sheets 加载最新数据');
+      setToast('✅ 已刷新最新数据');
     } catch (err) {
-      console.warn('[Sheets] Load failed:', err.message);
+      console.warn('[Firebase] Load failed:', err.message);
       setSyncStatus('error');
-      setToast('⚠️ 无法连接 Sheets，使用本地缓存');
-    } finally {
-      setTimeout(() => { syncBlockedRef.current = false; }, 100);
+      setToast('⚠️ 无法连接 Firebase');
     }
   }, [applyRemoteData]);
 
-  useEffect(() => { loadFromSheets(); }, [loadFromSheets]);
+  // ── Firebase real-time subscription ───────────────────
+  // Fires immediately on mount (initial data) then on every
+  // remote write. Skips modules currently being edited (dirty).
+  useEffect(() => {
+    const unsubData = subscribeToData((data) => {
+      const dk = dirtyKeysRef.current;
+      if (data.rn_members   && !dk.has('rn_members'))   setMembers(data.rn_members);
+      if (data.rn_products  && !dk.has('rn_products'))  setProducts(data.rn_products);
+      if (data.rn_expenses  && !dk.has('rn_expenses'))  setExpenses(data.rn_expenses);
+      if (data.rn_suppliers && !dk.has('rn_suppliers')) setSuppliers(data.rn_suppliers);
+      if (data.rn_goals     && !dk.has('rn_goals'))     setGoals(data.rn_goals);
+      if (data.rn_calc      && !dk.has('rn_calc'))      setCalc(data.rn_calc);
+      if (data.rn_files     && !dk.has('rn_files'))     setFiles(data.rn_files);
 
-  // ── Chat-only 10 s polling ────────────────────────────
-  // Only messages are auto-refreshed. All other modules use
-  // their own Save buttons and do not auto-pull from Sheets.
-  const chatPollRef = useRef(false);
+      // Chat: always merge by id — never overwrite pending messages
+      if (Array.isArray(data.rn_messages)) {
+        setMessages(local => {
+          const byId = new Map();
+          [...data.rn_messages, ...local].forEach(m => byId.set(m.id, m));
+          return [...byId.values()].sort((a, b) => a.id - b.id);
+        });
+        const newMsgs = data.rn_messages.filter(m => m.id > lastSeenMsgIdRef.current);
+        if (newMsgs.length > 0 && tabRef.current !== 'chat') {
+          setUnreadCount(c => c + newMsgs.length);
+          if ('Notification' in window && Notification.permission === 'granted') {
+            newMsgs.forEach(m => {
+              const sender = membersRef.current.find(mb => mb.id === m.from);
+              try { new Notification(sender?.name || '新消息', { body: m.text, icon: '/icon-192.png', tag: 'rn-chat-' + m.id }); } catch {}
+            });
+          }
+        }
+        if (data.rn_messages.length > 0) lastSeenMsgIdRef.current = Math.max(...data.rn_messages.map(m => m.id));
+      }
+
+      setLastSync(new Date());
+    });
+
+    const unsubConn = subscribeToConnection((connected) => {
+      setSyncStatus(connected ? 'synced' : 'error');
+    });
+
+    setSyncStatus('loading'); // show loading until first Firebase callback
+    return () => { unsubData(); unsubConn(); };
+  }, []); // eslint-disable-line
+
+  // ── Dirty-key registry (shared via DirtyCtx) ──────────
+  // Each module's useSave registers its sheetsKey here while
+  // the user has unsaved changes. The background poll skips
+  // any key present in this Set, avoiding overwrite conflicts.
+  const dirtyKeysRef = useRef(new Set());
+  const dirtyCtx = useMemo(() => ({
+    mark:  key => dirtyKeysRef.current.add(key),
+    clean: key => dirtyKeysRef.current.delete(key),
+  }), []);
+
+  // ── Global background poll ─────────────────────────────
+  const pollRef = useRef(false);
 
   // ── Chat notification state ────────────────────────────
   const [unreadCount, setUnreadCount] = useState(0);
@@ -1959,23 +2031,32 @@ export default function App() {
   useEffect(() => {
     if (!sheetsUrl) return;
     const tick = async () => {
-      if (chatPollRef.current) return;
-      chatPollRef.current = true;
+      if (pollRef.current) return;
+      pollRef.current = true;
       try {
         const data = await readAllFromSheets(sheetsUrl);
-        if (Array.isArray(data?.rn_messages)) {
-          syncBlockedRef.current = true;
-          const incoming = data.rn_messages;
+        const dk = dirtyKeysRef.current;
 
-          // ── Merge by id: never lose locally-sent messages ─
+        // ── Per-module: apply only if NOT dirty ───────────
+        // If the user has unsaved changes in a module, skip it
+        // so we never overwrite their in-progress edits.
+        if (data.rn_members   && !dk.has('rn_members'))   setMembers(data.rn_members);
+        if (data.rn_products  && !dk.has('rn_products'))  setProducts(data.rn_products);
+        if (data.rn_expenses  && !dk.has('rn_expenses'))  setExpenses(data.rn_expenses);
+        if (data.rn_suppliers && !dk.has('rn_suppliers')) setSuppliers(data.rn_suppliers);
+        if (data.rn_goals     && !dk.has('rn_goals'))     setGoals(data.rn_goals);
+        if (data.rn_calc      && !dk.has('rn_calc'))      setCalc(data.rn_calc);
+        if (data.rn_files     && !dk.has('rn_files'))     setFiles(data.rn_files);
+
+        // ── Chat: always merge by id (never overwrite) ────
+        if (Array.isArray(data.rn_messages)) {
+          const incoming = data.rn_messages;
           setMessages(local => {
             const byId = new Map();
-            // Remote messages first, then local — local wins on conflict
             [...incoming, ...local].forEach(m => byId.set(m.id, m));
             return [...byId.values()].sort((a, b) => a.id - b.id);
           });
-
-          // ── Detect new messages & fire notifications ──────
+          // Notifications for new messages
           const newMsgs = incoming.filter(m => m.id > lastSeenMsgIdRef.current);
           if (newMsgs.length > 0 && tabRef.current !== 'chat') {
             setUnreadCount(c => c + newMsgs.length);
@@ -1984,25 +2065,20 @@ export default function App() {
                 const sender = membersRef.current.find(mb => mb.id === m.from);
                 try {
                   new Notification(sender?.name || '新消息', {
-                    body: m.text,
-                    icon: '/icon-192.png',
-                    tag:  'rn-chat-' + m.id,
+                    body: m.text, icon: '/icon-192.png', tag: 'rn-chat-' + m.id,
                   });
-                } catch { /* ignore notification errors */ }
+                } catch { /* ignore */ }
               });
             }
           }
-          // Always advance lastSeen so we don't re-notify on the next poll
           if (incoming.length > 0) {
             lastSeenMsgIdRef.current = Math.max(...incoming.map(m => m.id));
           }
-
-          setTimeout(() => { syncBlockedRef.current = false; }, 200);
         }
       } catch { /* silent */ }
-      chatPollRef.current = false;
+      pollRef.current = false;
     };
-    const id = setInterval(tick, 5000); // 5 s — faster for chat
+    const id = setInterval(tick, 8000); // every 8 s — all modules
     return () => clearInterval(id);
   }, [sheetsUrl]); // eslint-disable-line
 
@@ -2023,13 +2099,7 @@ export default function App() {
     setSheetsUrl(url); sheetsUrlRef.current = url;
     localStorage.setItem('rn_sheetsUrl', url);
     setShowSettings(false);
-    if (!url) { setSyncStatus('offline'); syncBlockedRef.current = false; setToast('🔌 已断开 Sheets 连接'); return; }
-    setToast('✅ 已保存，正在连接…');
-    syncBlockedRef.current = true; setSyncStatus('loading');
-    readAllFromSheets(url)
-      .then(data => { applyRemoteData(data); setSyncStatus('synced'); setLastSync(new Date()); setToast('✅ Sheets 连接成功'); })
-      .catch(() => { setSyncStatus('error'); setToast('❌ 连接失败，请检查 URL'); })
-      .finally(() => { setTimeout(() => { syncBlockedRef.current = false; }, 100); });
+    setToast(url ? '✅ 图片上传 URL 已保存' : '🔌 图片上传 URL 已清除');
   };
 
   // ── Export / Import / Reset ────────────────────────────
@@ -2075,14 +2145,17 @@ export default function App() {
   if (!currentMember) {
     return (
       <AppCtx.Provider value={ctx}>
-        <LoginScreen members={members} onLogin={handleLogin} onAddMember={handleAddMember}/>
-        {toast && <Toast message={toast} onDone={()=>setToast(null)}/>}
+        <DirtyCtx.Provider value={dirtyCtx}>
+          <LoginScreen members={members} onLogin={handleLogin} onAddMember={handleAddMember}/>
+          {toast && <Toast message={toast} onDone={()=>setToast(null)}/>}
+        </DirtyCtx.Provider>
       </AppCtx.Provider>
     );
   }
 
   return (
     <AppCtx.Provider value={ctx}>
+      <DirtyCtx.Provider value={dirtyCtx}>
       <div className="min-h-screen bg-slate-50 max-w-sm mx-auto flex flex-col relative">
         {toast && <Toast message={toast} onDone={()=>setToast(null)}/>}
         {showSettings && <SettingsModal sheetsUrl={sheetsUrl} onSave={handleSaveSettings} onClose={()=>setShowSettings(false)} onImport={handleImport}/>}
@@ -2097,17 +2170,18 @@ export default function App() {
         <main className="flex-1 overflow-y-auto" style={{paddingBottom:tab==='chat'?0:'4.5rem'}}>
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
           {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
-          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts} sheetsUrl={sheetsUrl}/>}
-          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members} sheetsUrl={sheetsUrl}/>}
-          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers} sheetsUrl={sheetsUrl}/>}
-          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc} sheetsUrl={sheetsUrl}/>}
-          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members} sheetsUrl={sheetsUrl}/>}
-          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={!!sheetsUrl} sheetsUrl={sheetsUrl}/>}
-          {tab==='members'    && <MembersManager members={members} setMembers={setMembers} sheetsUrl={sheetsUrl}/>}
+          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
+          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members}/>}
+          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
+          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
+          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
+          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={true}/>}
+          {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
         </main>
 
         <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen} unreadCount={unreadCount}/>
       </div>
+      </DirtyCtx.Provider>
     </AppCtx.Provider>
   );
 }
