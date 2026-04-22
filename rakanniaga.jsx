@@ -77,7 +77,7 @@ const PHASES = [
 
 const TAB_TITLE = {
   dashboard:  "RakanNiaga 🏪",
-  files:      "AI 文件中心",
+  files:      "文件中心",
   products:   "竞品选品分析",
   expenses:   "合伙记账",
   suppliers:  "考察评分",
