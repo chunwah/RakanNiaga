@@ -1074,11 +1074,11 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
   // immediate=false → debounce 1.5 s (title / note keystrokes)
   const persist = useCallback((newFiles, immediate = true) => {
     const stripped = newFiles.map(f => ({ ...f, preview: null }));
-    dirty.add('rn_files');
+    dirty?.mark('rn_files');
     clearTimeout(saveTimer.current);
     const doWrite = () => {
       writeKey('rn_files', stripped);
-      dirty.delete('rn_files');
+      dirty?.clean('rn_files');
     };
     if (immediate) doWrite();
     else saveTimer.current = setTimeout(doWrite, 1500);
