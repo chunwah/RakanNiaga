@@ -214,7 +214,7 @@ function Dashboard({ files, products, expenses, suppliers, goals, go }) {
   const pct     = Math.round(done / goals.length * 100);
 
   const quick = [
-    { label: "上传文件",   sub: "OCR 扫描名片",   tab: "files",     style: { background: "linear-gradient(135deg,#6366f1,#8b5cf6)" } },
+    { label: "上传文件",   sub: "一站式文件中心",   tab: "files",     style: { background: "linear-gradient(135deg,#6366f1,#8b5cf6)" } },
     { label: "添加商品",   sub: "对比货源价格",   tab: "products",  style: { background: "linear-gradient(135deg,#10b981,#059669)" } },
     { label: "记录支出",   sub: "一键费用均摊",   tab: "expenses",  style: { background: "linear-gradient(135deg,#f59e0b,#ef4444)" } },
     { label: "评价供应商", sub: "打分筛选伙伴",   tab: "suppliers", style: { background: "linear-gradient(135deg,#ec4899,#f43f5e)" } },
