@@ -921,7 +921,7 @@ function Dashboard({ files, products, expenses, suppliers, goals, go, onReset })
   const [showReset, setShowReset] = useState(false);
 
   const quick = [
-    { label:'上传文件', sub:'OCR 扫描名片',  tab:'files',    bg:'linear-gradient(135deg,#6366f1,#8b5cf6)' },
+    { label:'共享文件', sub:'图片文件同步给伙伴',  tab:'files',    bg:'linear-gradient(135deg,#6366f1,#8b5cf6)' },
     { label:'添加商品', sub:'对比货源价格',  tab:'products', bg:'linear-gradient(135deg,#10b981,#059669)' },
     { label:'记录支出', sub:'一键费用均摊',  tab:'expenses', bg:'linear-gradient(135deg,#f59e0b,#ef4444)' },
     { label:'评价供应商',sub:'打分筛选伙伴', tab:'suppliers',bg:'linear-gradient(135deg,#ec4899,#f43f5e)' },
@@ -1064,10 +1064,12 @@ const FILE_CAT_LABELS = Object.fromEntries(FILE_CATS.slice(1));
 function FileCenter({ files, setFiles, sheetsUrl }) {
   const { currentMember, members } = useApp();
   const [filter,   setFilter]   = useState('all');
-  const [lightbox, setLightbox] = useState(null); // file to show full-screen
-  const fileRef    = useRef();
-  const saveTimer  = useRef(null);
-  const dirty      = useContext(DirtyCtx);
+  const [lightbox, setLightbox] = useState(null);
+  const fileRef      = useRef();
+  const retryFileRef = useRef();
+  const retryIdRef   = useRef(null);
+  const saveTimer    = useRef(null);
+  const dirty        = useContext(DirtyCtx);
 
   // ── Persist helper ──────────────────────────────────────
   // immediate=true  → write to Firebase right now (uploads, deletes)
@@ -1181,6 +1183,44 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
     });
   };
 
+  // ── Retry Drive upload ───────────────────────────────────
+  const retryUpload = async (f) => {
+    if (!sheetsUrl) return;
+    if (f.preview && f.preview.startsWith('data:')) {
+      setFiles(fs => fs.map(x => x.id === f.id ? { ...x, status: 'uploading' } : x));
+      const [header, b64] = f.preview.split(',');
+      const mimeType = header.match(/:(.*?);/)?.[1] || 'image/jpeg';
+      uploadImageToDrive(sheetsUrl, f.id, b64, (f.title || 'image') + '.jpg', mimeType).catch(() => {});
+      const driveUrl = await pollDriveUrl(sheetsUrl, f.id).catch(() => null);
+      setFiles(fs => {
+        const next = fs.map(x => x.id === f.id ? { ...x, status: 'done', driveUrl: driveUrl || null } : x);
+        if (driveUrl) persist(next);
+        return next;
+      });
+    } else {
+      retryIdRef.current = f.id;
+      retryFileRef.current?.click();
+    }
+  };
+
+  const handleRetryFileSelect = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file || !retryIdRef.current) return;
+    const targetId = retryIdRef.current;
+    retryIdRef.current = null;
+    setFiles(fs => fs.map(x => String(x.id) === String(targetId) ? { ...x, status: 'uploading' } : x));
+    const { base64, mimeType, dataUrl } = await compressImage(file);
+    setFiles(fs => fs.map(x => String(x.id) === String(targetId) ? { ...x, preview: dataUrl } : x));
+    uploadImageToDrive(sheetsUrl, targetId, base64, file.name, mimeType).catch(() => {});
+    const driveUrl = await pollDriveUrl(sheetsUrl, targetId).catch(() => null);
+    setFiles(fs => {
+      const next = fs.map(x => String(x.id) === String(targetId) ? { ...x, status: 'done', driveUrl: driveUrl || null } : x);
+      persist(next);
+      return next;
+    });
+  };
+
   const shown  = filter === 'all' ? files : files.filter(f => f.cat === filter);
   const images = shown.filter(f => f.isImage !== false);
   const docs   = shown.filter(f => f.isImage === false);
@@ -1193,7 +1233,8 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
         onClick={() => fileRef.current.click()}
         className="border-2 border-dashed border-indigo-300 bg-indigo-50 rounded-2xl p-5 text-center cursor-pointer hover:bg-indigo-100 active:scale-[0.98] transition-transform"
       >
-        <input ref={fileRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={handleUpload}/>
+        <input ref={fileRef}      type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={handleUpload}/>
+        <input ref={retryFileRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={handleRetryFileSelect}/>
         <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-2 shadow-sm">
           <Upload size={22} className="text-indigo-500"/>
         </div>
@@ -1248,16 +1289,22 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                           <FileText size={28} className="text-slate-300"/>
                         </div>
                       )}
-                      {/* Uploading overlay */}
                       {f.status === 'uploading' && (
                         <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center gap-1">
                           <Loader size={18} className="text-white animate-spin"/>
                           <span className="text-white text-[10px]">上传中…</span>
                         </div>
                       )}
-                      {/* Cloud badge */}
-                      {f.driveUrl && (
+                      {f.status === 'done' && f.driveUrl && (
                         <span className="absolute top-1.5 right-1.5 bg-emerald-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-semibold">☁</span>
+                      )}
+                      {f.status === 'done' && !f.driveUrl && sheetsUrl && (
+                        <button
+                          onClick={e => { e.stopPropagation(); retryUpload(f); }}
+                          className="absolute top-1.5 right-1.5 bg-amber-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-semibold flex items-center gap-0.5 active:scale-95"
+                        >
+                          <RefreshCw size={8}/> 重试
+                        </button>
                       )}
                     </div>
 
@@ -1343,6 +1390,11 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                         <span className="flex items-center gap-1 text-[11px] text-amber-500">
                           <Loader size={10} className="animate-spin"/> 上传中…
                         </span>
+                      )}
+                      {f.status === 'done' && !f.driveUrl && sheetsUrl && (
+                        <button onClick={() => retryUpload(f)} className="flex items-center gap-1 text-[11px] text-amber-500 font-medium">
+                          <RefreshCw size={10}/> 重试上传
+                        </button>
                       )}
                     </div>
                   </div>
@@ -2155,7 +2207,7 @@ export default function App() {
           if ('Notification' in window && Notification.permission === 'granted') {
             newMsgs.forEach(m => {
               const sender = membersRef.current.find(mb => mb.id === m.from);
-              try { new Notification(sender?.name || '新消息', { body: m.text, icon: '/icon-192.png', tag: 'rn-chat-' + m.id }); } catch {}
+              try { new Notification(sender?.name || '新消息', { body: m.text, tag: 'rn-chat-' + m.id }); } catch {}
             });
           }
         }
@@ -2205,6 +2257,44 @@ export default function App() {
     }
   }, []); // eslint-disable-line
 
+  // ── Browser / PWA badge effects ────────────────────────
+  // 1. Document title badge — shows in browser tab & alt-tab switcher
+  useEffect(() => {
+    document.title = unreadCount > 0
+      ? `(${unreadCount > 9 ? '9+' : unreadCount}) RakanNiaga 🏪`
+      : 'RakanNiaga 🏪';
+  }, [unreadCount]);
+
+  // 2. PWA App Badge API — badge on installed-PWA icon (Android / desktop Chrome)
+  useEffect(() => {
+    if (!('setAppBadge' in navigator)) return;
+    if (unreadCount > 0) navigator.setAppBadge(unreadCount).catch(() => {});
+    else                 navigator.clearAppBadge().catch(() => {});
+  }, [unreadCount]);
+
+  // 3. Favicon canvas badge — red dot on browser-tab icon
+  useEffect(() => {
+    const SIZE = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.font = `${SIZE * 0.85}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🏪', SIZE / 2, SIZE / 2);
+    if (unreadCount > 0) {
+      const R = SIZE * 0.28, cx = SIZE - R, cy = R;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ef4444'; ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${R * 1.15}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(unreadCount > 9 ? '9+' : String(unreadCount), cx, cy + 0.5);
+    }
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+    link.href = canvas.toDataURL('image/png');
+  }, [unreadCount]);
+
   useEffect(() => {
     if (!sheetsUrl) return;
     const tick = async () => {
@@ -2242,7 +2332,7 @@ export default function App() {
                 const sender = membersRef.current.find(mb => mb.id === m.from);
                 try {
                   new Notification(sender?.name || '新消息', {
-                    body: m.text, icon: '/icon-192.png', tag: 'rn-chat-' + m.id,
+                    body: m.text, tag: 'rn-chat-' + m.id,
                   });
                 } catch { /* ignore */ }
               });
