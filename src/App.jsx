@@ -1049,185 +1049,344 @@ function driveViewUrl(url) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  FILE CENTER
+//  SHARED FILES  （共享文件夹）
 // ═══════════════════════════════════════════════════════════
+const FILE_CATS = [
+  ['all',      '全部'],
+  ['design',   '包装设计'],
+  ['product',  '产品图'],
+  ['sample',   '样品照'],
+  ['contract', '合同'],
+  ['other',    '其他'],
+];
+const FILE_CAT_LABELS = Object.fromEntries(FILE_CATS.slice(1));
+
 function FileCenter({ files, setFiles, sheetsUrl }) {
-  const [filter, setFilter] = useState('all');
-  const fileRef = useRef();
+  const { currentMember, members } = useApp();
+  const [filter,   setFilter]   = useState('all');
+  const [lightbox, setLightbox] = useState(null); // file to show full-screen
+  const fileRef    = useRef();
+  const saveTimer  = useRef(null);
+  const dirty      = useContext(DirtyCtx);
 
-  const dataRef = useRef(stripPreviews(files));
-  useEffect(() => { dataRef.current = stripPreviews(files); }, [files]);
-  const { isDirty, countdown, markDirty, handleSave } = useSave('rn_files', () => dataRef.current);
+  // ── Persist helper ──────────────────────────────────────
+  // immediate=true  → write to Firebase right now (uploads, deletes)
+  // immediate=false → debounce 1.5 s (title / note keystrokes)
+  const persist = useCallback((newFiles, immediate = true) => {
+    const stripped = newFiles.map(f => ({ ...f, preview: null }));
+    dirty.add('rn_files');
+    clearTimeout(saveTimer.current);
+    const doWrite = () => {
+      writeKey('rn_files', stripped);
+      dirty.delete('rn_files');
+    };
+    if (immediate) doWrite();
+    else saveTimer.current = setTimeout(doWrite, 1500);
+  }, [dirty]);
 
+  // ── Upload handler ──────────────────────────────────────
   const handleUpload = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+    const picked = [...(e.target.files || [])];
+    if (!picked.length) return;
     e.target.value = '';
-    const id = Date.now();
 
-    // Show immediately with scanning state
-    setFiles(f => [{
-      id, name: file.name, cat: 'card',
-      date: new Date().toLocaleDateString('zh-CN'),
-      status: 'scanning', ocr: { supplier: '', contact: '', price: '', moq: '' },
-      preview: URL.createObjectURL(file), driveUrl: null,
-    }, ...f]);
-    markDirty();
+    for (const file of picked) {
+      const id      = Date.now() + Math.random();
+      const isImage = file.type.startsWith('image/');
 
-    // Compress image once; use for both Gemini and Drive
-    const { base64, mimeType, dataUrl } = await compressImage(file);
+      // Add placeholder immediately (local preview while uploading)
+      const placeholder = {
+        id,
+        title:    file.name.replace(/\.[^.]+$/, ''),
+        note:     '',
+        cat:      'other',
+        by:       currentMember?.id || '',
+        date:     new Date().toLocaleDateString('zh-CN'),
+        status:   'uploading',
+        preview:  isImage ? URL.createObjectURL(file) : null,
+        driveUrl: null,
+        isImage,
+      };
+      setFiles(f => [placeholder, ...f]);
+      // Don't persist yet — wait until Drive URL is ready
 
-    // Run Gemini OCR + Drive upload in parallel
-    const [ocrResult] = await Promise.allSettled([
-      callGeminiOCR(base64, mimeType),
-      sheetsUrl ? uploadImageToDrive(sheetsUrl, id, base64, file.name, mimeType) : Promise.resolve(),
-    ]);
+      if (isImage) {
+        const { base64, mimeType, dataUrl } = await compressImage(file);
+        // Replace blob preview with compressed dataUrl
+        setFiles(f => f.map(x => x.id === id ? { ...x, preview: dataUrl } : x));
 
-    const ocr = ocrResult.status === 'fulfilled'
-      ? ocrResult.value
-      : { supplier: '', contact: '', price: '', moq: '' };
+        const finish = (driveUrl) => {
+          setFiles(f => {
+            const next = f.map(x => x.id === id ? { ...x, status: 'done', driveUrl: driveUrl || null } : x);
+            persist(next);
+            return next;
+          });
+        };
 
-    // Mark done with OCR prefilled; preview stays as local blob for now
-    setFiles(f => f.map(x => x.id === id
-      ? { ...x, status: 'done', ocr, preview: dataUrl }
-      : x
-    ));
-    markDirty();
-
-    // Poll for Drive URL in background (Apps Script writes it to Sheets after saving)
-    if (sheetsUrl) {
-      pollDriveUrl(sheetsUrl, id).then(driveUrl => {
-        if (driveUrl) {
-          setFiles(f => f.map(x => x.id === id ? { ...x, driveUrl } : x));
+        if (sheetsUrl) {
+          uploadImageToDrive(sheetsUrl, id, base64, file.name, mimeType).catch(() => {});
+          pollDriveUrl(sheetsUrl, id).then(finish).catch(() => finish(null));
+        } else {
+          finish(null);
         }
-      });
+      } else {
+        // Non-image file
+        const finish = (driveUrl) => {
+          setFiles(f => {
+            const next = f.map(x => x.id === id ? { ...x, status: 'done', driveUrl: driveUrl || null } : x);
+            persist(next);
+            return next;
+          });
+        };
+
+        if (sheetsUrl) {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const b64 = reader.result.split(',')[1];
+            await uploadImageToDrive(sheetsUrl, id, b64, file.name, file.type).catch(() => {});
+            const driveUrl = await pollDriveUrl(sheetsUrl, id).catch(() => null);
+            finish(driveUrl);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          finish(null);
+        }
+      }
     }
   };
 
-  const updateOcr = (id, field, val) => {
-    setFiles(f => f.map(x => x.id === id ? { ...x, ocr: { ...x.ocr, [field]: val } } : x));
+  // ── Field update (title / note / category) ──────────────
+  const updateField = (id, field, val) => {
+    setFiles(f => {
+      const next = f.map(x => x.id === id ? { ...x, [field]: val } : x);
+      persist(next, field === 'cat'); // category → immediate; text → debounced via false below
+      return next;
+    });
   };
-  const updateFileCat = (id, val) => {
-    setFiles(f => f.map(x => x.id === id ? { ...x, cat: val } : x));
+  const updateText = (id, field, val) => {
+    setFiles(f => {
+      const next = f.map(x => x.id === id ? { ...x, [field]: val } : x);
+      persist(next, false); // debounced
+      return next;
+    });
   };
 
-  const shown = filter==='all' ? files : files.filter(f=>f.cat===filter);
+  // ── Delete ──────────────────────────────────────────────
+  const deleteFile = (id) => {
+    setFiles(f => {
+      const next = f.filter(x => x.id !== id);
+      persist(next, true);
+      return next;
+    });
+  };
+
+  const shown  = filter === 'all' ? files : files.filter(f => f.cat === filter);
+  const images = shown.filter(f => f.isImage !== false);
+  const docs   = shown.filter(f => f.isImage === false);
 
   return (
-    <div className="p-4 space-y-4">
-      <div onClick={()=>fileRef.current.click()} className="border-2 border-dashed border-indigo-300 bg-indigo-50 rounded-2xl p-6 text-center cursor-pointer hover:bg-indigo-100">
-        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload}/>
-        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm">
+    <div className="p-4 space-y-4 pb-24">
+
+      {/* ── Upload zone ── */}
+      <div
+        onClick={() => fileRef.current.click()}
+        className="border-2 border-dashed border-indigo-300 bg-indigo-50 rounded-2xl p-5 text-center cursor-pointer hover:bg-indigo-100 active:scale-[0.98] transition-transform"
+      >
+        <input ref={fileRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={handleUpload}/>
+        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-2 shadow-sm">
           <Upload size={22} className="text-indigo-500"/>
         </div>
-        <p className="font-semibold text-indigo-700">点击上传产品吊牌 / 供应商名片</p>
-        <p className="text-xs text-indigo-400 mt-1">AI 自动提取关键信息 · JPG / PNG</p>
+        <p className="font-semibold text-indigo-700 text-sm">点击上传图片或文件</p>
+        <p className="text-xs text-indigo-400 mt-0.5">可多选 · 自动同步给伙伴</p>
+        {!sheetsUrl && (
+          <p className="text-xs text-amber-500 mt-1.5">⚠ 未配置图片上传 URL，图片仅本地可见</p>
+        )}
       </div>
 
+      {/* ── Category filter ── */}
       <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
-        {[['all','全部'],['card','名片'],['product','产品图'],['contract','合同']].map(([v,l])=>(
-          <button key={v} onClick={()=>setFilter(v)}
-            className={`px-3 py-1.5 rounded-full text-xs whitespace-nowrap flex-shrink-0 ${filter===v?'bg-indigo-600 text-white font-semibold':'bg-white text-slate-500 border border-slate-200'}`}>
+        {FILE_CATS.map(([v, l]) => (
+          <button key={v} onClick={() => setFilter(v)}
+            className={`px-3 py-1.5 rounded-full text-xs whitespace-nowrap flex-shrink-0 ${
+              filter === v ? 'bg-indigo-600 text-white font-semibold' : 'bg-white text-slate-500 border border-slate-200'
+            }`}>
             {l}
           </button>
         ))}
       </div>
 
-      {shown.length===0 ? (
-        <div className="text-center py-14 text-slate-400"><FileText size={40} className="mx-auto mb-3 opacity-25"/><p className="text-sm">暂无文件</p></div>
-      ):(
-        <div className="space-y-3">
-          {shown.map(f=>(
-            <Card key={f.id} className="overflow-hidden">
-              <div className="p-3 flex items-center gap-3">
-                {(f.preview || f.driveUrl) ? (
-                  <img src={f.preview || driveThumb(f.driveUrl)} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0"/>
-                ) : (
-                  <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center flex-shrink-0"><FileText size={20} className="text-slate-400"/></div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-slate-800 text-sm truncate">{f.name}</p>
-                  <p className="text-xs text-slate-400">{f.date}</p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {f.status === 'scanning' ? (
-                    <span className="text-xs px-2 py-1 rounded-full font-medium bg-amber-100 text-amber-600 flex items-center gap-1">
-                      <Loader size={11} className="animate-spin"/> AI 识别中…
-                    </span>
-                  ) : f.driveUrl ? (
-                    <a href={f.driveUrl} target="_blank" rel="noreferrer"
-                      className="text-xs px-2 py-1 rounded-full font-medium bg-emerald-100 text-emerald-600">
-                      ✓ Drive
-                    </a>
-                  ) : (
-                    <span className="text-xs px-2 py-1 rounded-full font-medium bg-slate-100 text-slate-500">
-                      本地
-                    </span>
-                  )}
-                  <button onClick={()=>{setFiles(fs=>fs.filter(x=>x.id!==f.id)); markDirty();}} className="text-rose-400"><Trash2 size={14}/></button>
-                </div>
-              </div>
-              {f.status === 'scanning' && (
-                <div className="px-3 pb-3">
-                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 flex items-center gap-2">
-                    <Loader size={14} className="text-amber-500 animate-spin flex-shrink-0"/>
-                    <span className="text-xs text-amber-600">AI 正在识别图片内容…</span>
+      {shown.length === 0 ? (
+        <div className="text-center py-14 text-slate-400">
+          <FileText size={40} className="mx-auto mb-3 opacity-25"/>
+          <p className="text-sm">暂无文件</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+
+          {/* ── Image grid (2-column) ── */}
+          {images.length > 0 && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {images.map(f => {
+                const uploader = members.find(m => m.id === f.by);
+                const thumb    = f.preview || driveThumb(f.driveUrl, 'w400');
+                return (
+                  <div key={f.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
+
+                    {/* Thumbnail */}
+                    <div
+                      className="relative bg-slate-100 cursor-pointer"
+                      style={{ aspectRatio: '1 / 1' }}
+                      onClick={() => thumb && setLightbox(f)}
+                    >
+                      {thumb ? (
+                        <img src={thumb} alt={f.title} className="w-full h-full object-cover"/>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <FileText size={28} className="text-slate-300"/>
+                        </div>
+                      )}
+                      {/* Uploading overlay */}
+                      {f.status === 'uploading' && (
+                        <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center gap-1">
+                          <Loader size={18} className="text-white animate-spin"/>
+                          <span className="text-white text-[10px]">上传中…</span>
+                        </div>
+                      )}
+                      {/* Cloud badge */}
+                      {f.driveUrl && (
+                        <span className="absolute top-1.5 right-1.5 bg-emerald-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-semibold">☁</span>
+                      )}
+                    </div>
+
+                    {/* Info panel */}
+                    <div className="p-2.5 space-y-1.5">
+                      <input
+                        value={f.title}
+                        onChange={e => updateText(f.id, 'title', e.target.value)}
+                        className="w-full text-xs font-semibold text-slate-800 outline-none border-b border-transparent focus:border-indigo-300 bg-transparent"
+                        placeholder="标题…"
+                      />
+                      <input
+                        value={f.note}
+                        onChange={e => updateText(f.id, 'note', e.target.value)}
+                        className="w-full text-[11px] text-slate-400 outline-none bg-transparent"
+                        placeholder="备注…"
+                      />
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={f.cat}
+                          onChange={e => updateField(f.id, 'cat', e.target.value)}
+                          className="flex-1 text-[11px] text-indigo-600 bg-indigo-50 rounded-lg px-1.5 py-0.5 outline-none border-0 min-w-0"
+                        >
+                          {FILE_CATS.slice(1).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                        </select>
+                        <button onClick={() => deleteFile(f.id)} className="text-slate-300 hover:text-rose-400 flex-shrink-0 p-0.5">
+                          <Trash2 size={12}/>
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {uploader?.name || '—'} · {f.date}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
-              {f.status === 'done' && f.ocr && (
-                <div className="px-3 pb-3">
-                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2">
-                    <span className="text-xs font-semibold text-slate-500">
-                      {GEMINI_KEY ? '🤖 AI 识别结果（可编辑）' : '备注信息（可编辑）'}
-                    </span>
-                    {/* Category select */}
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">📂 分类</span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Document list ── */}
+          {docs.map(f => {
+            const uploader = members.find(m => m.id === f.by);
+            return (
+              <Card key={f.id} className="p-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <FileText size={18} className="text-indigo-400"/>
+                  </div>
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <input
+                      value={f.title}
+                      onChange={e => updateText(f.id, 'title', e.target.value)}
+                      className="w-full text-sm font-semibold text-slate-800 outline-none border-b border-transparent focus:border-indigo-300 bg-transparent"
+                      placeholder="标题…"
+                    />
+                    <input
+                      value={f.note}
+                      onChange={e => updateText(f.id, 'note', e.target.value)}
+                      className="w-full text-xs text-slate-400 outline-none bg-transparent"
+                      placeholder="备注…"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={f.cat}
-                        onChange={ev => updateFileCat(f.id, ev.target.value)}
-                        className="flex-1 bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs focus:outline-none focus:border-indigo-400"
+                        onChange={e => updateField(f.id, 'cat', e.target.value)}
+                        className="text-[11px] text-indigo-600 bg-indigo-50 rounded-lg px-1.5 py-0.5 outline-none border-0"
                       >
-                        <option value="card">名片</option>
-                        <option value="product">产品图</option>
-                        <option value="contract">合同</option>
-                        <option value="other">其他</option>
+                        {FILE_CATS.slice(1).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                       </select>
-                    </div>
-                    {/* OCR fields */}
-                    {[
-                      ['🏭 供应商',   'supplier', f.ocr.supplier],
-                      ['📞 联系方式', 'contact',  f.ocr.contact],
-                      ['💰 初步报价', 'price',    f.ocr.price],
-                      ['📦 MOQ',     'moq',      f.ocr.moq],
-                    ].map(([label, field, val]) => (
-                      <div key={field} className="flex items-center gap-2 text-xs">
-                        <span className="text-slate-400 whitespace-nowrap w-20 flex-shrink-0">{label}</span>
-                        <input
-                          value={val}
-                          onChange={ev => updateOcr(f.id, field, ev.target.value)}
-                          placeholder="填写..."
-                          className="flex-1 bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs focus:outline-none focus:border-indigo-400"
-                        />
-                      </div>
-                    ))}
-                    {f.driveUrl && (
-                      <div className="pt-1 border-t border-slate-100">
+                      <span className="text-[10px] text-slate-400">{uploader?.name || '—'} · {f.date}</span>
+                      {f.driveUrl && (
                         <a href={driveViewUrl(f.driveUrl)} target="_blank" rel="noreferrer"
-                          className="text-xs text-indigo-500 underline">
-                          📎 在 Google Drive 查看原图
+                          className="text-[11px] text-indigo-500 underline">
+                          查看文件
                         </a>
-                      </div>
-                    )}
+                      )}
+                      {f.status === 'uploading' && (
+                        <span className="flex items-center gap-1 text-[11px] text-amber-500">
+                          <Loader size={10} className="animate-spin"/> 上传中…
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  <button onClick={() => deleteFile(f.id)} className="text-slate-300 hover:text-rose-400 flex-shrink-0 mt-0.5">
+                    <Trash2 size={14}/>
+                  </button>
                 </div>
-              )}
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
+
         </div>
       )}
 
-      <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
+      {/* ── Lightbox ── */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-center p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div className="w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <img
+              src={lightbox.preview || driveThumb(lightbox.driveUrl, 'w1200')}
+              alt={lightbox.title}
+              className="w-full rounded-2xl max-h-[70vh] object-contain bg-black"
+            />
+            <div className="mt-3 text-white text-center space-y-1">
+              <p className="font-semibold text-sm">{lightbox.title}</p>
+              {lightbox.note && <p className="text-xs opacity-60">{lightbox.note}</p>}
+              <p className="text-[11px] opacity-50">
+                {FILE_CAT_LABELS[lightbox.cat] || '其他'} ·{' '}
+                {members.find(m => m.id === lightbox.by)?.name || '—'} ·{' '}
+                {lightbox.date}
+              </p>
+              <div className="flex items-center justify-center gap-3 pt-1">
+                {lightbox.driveUrl && (
+                  <a href={driveViewUrl(lightbox.driveUrl)} target="_blank" rel="noreferrer"
+                    className="text-xs bg-white/20 hover:bg-white/30 px-4 py-1.5 rounded-full">
+                    原图 ↗
+                  </a>
+                )}
+                <button
+                  onClick={() => setLightbox(null)}
+                  className="text-xs bg-white/20 hover:bg-white/30 px-4 py-1.5 rounded-full"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
