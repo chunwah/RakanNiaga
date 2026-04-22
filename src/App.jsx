@@ -1288,7 +1288,10 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                         </button>
                       </div>
                       <p className="text-[10px] text-slate-400 truncate">
-                        {uploader?.name || '—'} · {f.date}{f.time ? ` ${f.time}` : ''}
+                        Uploaded By: {uploader?.name || '—'} 
+                      </p>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {f.date}{f.time ? ` ${f.time}` : ''}
                       </p>
                     </div>
                   </div>
