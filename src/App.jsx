@@ -1102,6 +1102,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
         cat:      'other',
         by:       currentMember?.id || '',
         date:     new Date().toLocaleDateString('zh-CN'),
+        time:     new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
         status:   'uploading',
         preview:  isImage ? URL.createObjectURL(file) : null,
         driveUrl: null,
@@ -1227,8 +1228,10 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
           {images.length > 0 && (
             <div className="grid grid-cols-2 gap-2.5">
               {images.map(f => {
-                const uploader = members.find(m => m.id === f.by);
+                const uploader = members.find(m => String(m.id) === String(f.by));
                 const thumb    = f.preview || driveThumb(f.driveUrl, 'w400');
+                const title    = f.title ?? (f.name ? f.name.replace(/\.[^.]+$/, '') : '');
+                const note     = f.note  ?? '';
                 return (
                   <div key={f.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
 
@@ -1261,20 +1264,20 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                     {/* Info panel */}
                     <div className="p-2.5 space-y-1.5">
                       <input
-                        value={f.title}
+                        value={title}
                         onChange={e => updateText(f.id, 'title', e.target.value)}
                         className="w-full text-xs font-semibold text-slate-800 outline-none border-b border-transparent focus:border-indigo-300 bg-transparent"
                         placeholder="标题…"
                       />
                       <input
-                        value={f.note}
+                        value={note}
                         onChange={e => updateText(f.id, 'note', e.target.value)}
                         className="w-full text-[11px] text-slate-400 outline-none bg-transparent"
                         placeholder="备注…"
                       />
                       <div className="flex items-center gap-1">
                         <select
-                          value={f.cat}
+                          value={f.cat || 'other'}
                           onChange={e => updateField(f.id, 'cat', e.target.value)}
                           className="flex-1 text-[11px] text-indigo-600 bg-indigo-50 rounded-lg px-1.5 py-0.5 outline-none border-0 min-w-0"
                         >
@@ -1285,7 +1288,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                         </button>
                       </div>
                       <p className="text-[10px] text-slate-400 truncate">
-                        {uploader?.name || '—'} · {f.date}
+                        {uploader?.name || '—'} · {f.date}{f.time ? ` ${f.time}` : ''}
                       </p>
                     </div>
                   </div>
@@ -1296,7 +1299,9 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
 
           {/* ── Document list ── */}
           {docs.map(f => {
-            const uploader = members.find(m => m.id === f.by);
+            const uploader = members.find(m => String(m.id) === String(f.by));
+            const title    = f.title ?? (f.name ? f.name.replace(/\.[^.]+$/, '') : '');
+            const note     = f.note  ?? '';
             return (
               <Card key={f.id} className="p-3">
                 <div className="flex items-start gap-3">
@@ -1305,26 +1310,26 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
                   </div>
                   <div className="flex-1 min-w-0 space-y-1.5">
                     <input
-                      value={f.title}
+                      value={title}
                       onChange={e => updateText(f.id, 'title', e.target.value)}
                       className="w-full text-sm font-semibold text-slate-800 outline-none border-b border-transparent focus:border-indigo-300 bg-transparent"
                       placeholder="标题…"
                     />
                     <input
-                      value={f.note}
+                      value={note}
                       onChange={e => updateText(f.id, 'note', e.target.value)}
                       className="w-full text-xs text-slate-400 outline-none bg-transparent"
                       placeholder="备注…"
                     />
                     <div className="flex flex-wrap items-center gap-2">
                       <select
-                        value={f.cat}
+                        value={f.cat || 'other'}
                         onChange={e => updateField(f.id, 'cat', e.target.value)}
                         className="text-[11px] text-indigo-600 bg-indigo-50 rounded-lg px-1.5 py-0.5 outline-none border-0"
                       >
                         {FILE_CATS.slice(1).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                       </select>
-                      <span className="text-[10px] text-slate-400">{uploader?.name || '—'} · {f.date}</span>
+                      <span className="text-[10px] text-slate-400">{uploader?.name || '—'} · {f.date}{f.time ? ` ${f.time}` : ''}</span>
                       {f.driveUrl && (
                         <a href={driveViewUrl(f.driveUrl)} target="_blank" rel="noreferrer"
                           className="text-[11px] text-indigo-500 underline">
@@ -1362,12 +1367,12 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
               className="w-full rounded-2xl max-h-[70vh] object-contain bg-black"
             />
             <div className="mt-3 text-white text-center space-y-1">
-              <p className="font-semibold text-sm">{lightbox.title}</p>
-              {lightbox.note && <p className="text-xs opacity-60">{lightbox.note}</p>}
+              <p className="font-semibold text-sm">{lightbox.title || lightbox.name || ''}</p>
+              {(lightbox.note || '') && <p className="text-xs opacity-60">{lightbox.note}</p>}
               <p className="text-[11px] opacity-50">
                 {FILE_CAT_LABELS[lightbox.cat] || '其他'} ·{' '}
-                {members.find(m => m.id === lightbox.by)?.name || '—'} ·{' '}
-                {lightbox.date}
+                {members.find(m => String(m.id) === String(lightbox.by))?.name || '—'} ·{' '}
+                {lightbox.date}{lightbox.time ? ` ${lightbox.time}` : ''}
               </p>
               <div className="flex items-center justify-center gap-3 pt-1">
                 {lightbox.driveUrl && (
