@@ -6,6 +6,7 @@
  */
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, update, get } from 'firebase/database';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -17,9 +18,23 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-const app = initializeApp(firebaseConfig);
-const db  = getDatabase(app);
+const app  = initializeApp(firebaseConfig);
+const db   = getDatabase(app);
+const auth = getAuth(app);
 const ROOT = 'rakanniaga';
+
+// ── Silent anonymous sign-in ──────────────────────────────────
+// Signs in automatically so that auth != null rules are satisfied.
+// authReady resolves once a user (anonymous or otherwise) is confirmed.
+let _resolveAuth;
+const authReady = new Promise(res => { _resolveAuth = res; });
+
+signInAnonymously(auth).catch(err =>
+  console.warn('[Firebase] Anonymous sign-in failed:', err.message)
+);
+onAuthStateChanged(auth, (user) => {
+  if (user) _resolveAuth();
+});
 
 // ── Empty-array sentinel ──────────────────────────────────────
 // Firebase Realtime Database converts empty arrays [] to null and
@@ -36,24 +51,28 @@ const unwrap = v => (v && v.__rn_empty__ === true)        ? []             : v;
  */
 export function subscribeToData(callback) {
   const rootRef = ref(db, ROOT);
-  return onValue(
-    rootRef,
-    (snap) => {
-      const raw = snap.val() || {};
-      // Unwrap any sentinel values back to empty arrays
-      const data = Object.fromEntries(
-        Object.entries(raw).map(([k, v]) => [k, unwrap(v)])
-      );
-      callback(data);
-    },
-    (err) => console.warn('[Firebase] onValue error:', err.message),
-  );
+  let unsub = () => {};
+  authReady.then(() => {
+    unsub = onValue(
+      rootRef,
+      (snap) => {
+        const raw = snap.val() || {};
+        const data = Object.fromEntries(
+          Object.entries(raw).map(([k, v]) => [k, unwrap(v)])
+        );
+        callback(data);
+      },
+      (err) => console.warn('[Firebase] onValue error:', err.message),
+    );
+  });
+  return () => unsub();
 }
 
 /**
  * 单次读取（用于手动刷新按钮）。
  */
 export async function readOnce() {
+  await authReady;
   const snap = await get(ref(db, ROOT));
   return snap.val() || {};
 }
@@ -61,7 +80,8 @@ export async function readOnce() {
 /**
  * 写入单个 key（fire-and-forget，Firebase 本身处理重试）。
  */
-export function writeKey(key, value) {
+export async function writeKey(key, value) {
+  await authReady;
   // Wrap empty arrays so Firebase doesn't silently remove the node
   return update(ref(db, ROOT), { [key]: wrap(value) })
     .catch(err => console.warn('[Firebase] Write failed:', key, err.message));
