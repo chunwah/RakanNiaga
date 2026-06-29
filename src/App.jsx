@@ -245,6 +245,18 @@ const SEED_CHAT = [];
 const SEED_CALC = { sell: 89, cost: 35, ship: 8, fee: 5, ads: 10 };
 
 // ═══════════════════════════════════════════════════════════
+//  FIXED PARTNERS — 合伙记账专用
+//  share: 应承担的费用比例  rate: 费率调整系数
+// ═══════════════════════════════════════════════════════════
+const FIXED_PARTNERS = [
+  { id: 'hua',   name: '华',    share: 0.40, rate: 1.00, colorIdx: 0 }, // 40%，正常费率
+  { id: 'chris', name: 'Chris', share: 0.30, rate: 0.90, colorIdx: 1 }, // 30%，九折优惠
+  { id: 'yin',   name: 'Yin',   share: 0.20, rate: 1.10, colorIdx: 2 }, // 20%，溢价 10%
+  { id: 'luren', name: '路人甲', share: 0.10, rate: 1.10, colorIdx: 3 }, // 10%，溢价 10%
+];
+// 0.40×1.00 + 0.30×0.90 + 0.20×1.10 + 0.10×1.10 = 0.40+0.27+0.22+0.11 = 1.00 ✓
+
+// ═══════════════════════════════════════════════════════════
 //  CONSTANTS
 // ═══════════════════════════════════════════════════════════
 const CAT = {
@@ -293,6 +305,11 @@ function resolveMember(members, id) {
   if (id === 'me')      return { name: '我', colorIdx: 0 };
   if (id === 'partner') return { name: '伙伴', colorIdx: 1 };
   return { name: id, colorIdx: 7 };
+}
+
+/** Resolve a fixed partner by id; falls back to a ghost object */
+function resolvePartner(id) {
+  return FIXED_PARTNERS.find(p => p.id === id) || { name: id || '未知', colorIdx: 7 };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1556,13 +1573,12 @@ function ProductBenchmark({ products, setProducts }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  EXPENSE TRACKER  (multi-member split)
+//  EXPENSE TRACKER  (fixed 4-partner weighted split)
 // ═══════════════════════════════════════════════════════════
-function ExpenseTracker({ expenses, setExpenses, members }) {
-  const { currentMember } = useApp();
+function ExpenseTracker({ expenses, setExpenses }) {
   const today = new Date().toISOString().slice(0,10);
-  const [showAdd,setShowAdd] = useState(false);
-  const [form,setForm] = useState({desc:'',amount:'',cat:'food',by:currentMember?.id||'',date:today});
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({desc:'', amount:'', cat:'food', by:'hua', date:today});
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const dataRef = useRef(expenses);
@@ -1570,83 +1586,164 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
   const { isDirty, countdown, markDirty, handleSave } = useSave('rn_expenses', () => dataRef.current);
 
   const add = () => {
-    if(!form.desc.trim()||!form.amount) return;
-    setExpenses(es=>[...es,{id:Date.now(),...form,amount:parseFloat(form.amount)}]);
+    if (!form.desc.trim() || !form.amount) return;
+    setExpenses(es => [...es, {id:Date.now(), ...form, amount:parseFloat(form.amount)}]);
     markDirty();
-    setForm({desc:'',amount:'',cat:'food',by:currentMember?.id||'',date:today});
+    setForm({desc:'', amount:'', cat:'food', by:'hua', date:today});
     setShowAdd(false);
   };
 
-  // Multi-member split calculation
-  const total = expenses.reduce((s,e)=>s+e.amount,0);
-  const activeMembers = members.length > 0 ? members : [];
-  const n = Math.max(activeMembers.length, 1);
-  const fairShare = total / n;
+  // ── Weighted split calculation ─────────────────────────
+  // Each partner's due = total × share × rate
+  const total = expenses.reduce((s,e) => s + e.amount, 0);
 
-  // How much each member paid
   const paidMap = {};
-  activeMembers.forEach(m=>{ paidMap[m.id]=0; });
-  expenses.forEach(e=>{
-    if(paidMap[e.by]!==undefined) paidMap[e.by]+=e.amount;
+  FIXED_PARTNERS.forEach(p => { paidMap[p.id] = 0; });
+  expenses.forEach(e => {
+    if (paidMap[e.by] !== undefined) paidMap[e.by] += e.amount;
   });
 
-  // Settlements (who owes who)
-  const debtors   = activeMembers.filter(m=>(paidMap[m.id]||0) < fairShare - 0.01).map(m=>({...m,owes:fairShare-(paidMap[m.id]||0)}));
-  const creditors = activeMembers.filter(m=>(paidMap[m.id]||0) > fairShare + 0.01).map(m=>({...m,due:(paidMap[m.id]||0)-fairShare}));
+  const dueMap = {};
+  FIXED_PARTNERS.forEach(p => { dueMap[p.id] = total * p.share * p.rate; });
+
+  // Settlement algorithm
+  const debtors   = FIXED_PARTNERS
+    .filter(p => paidMap[p.id] < dueMap[p.id] - 0.01)
+    .map(p => ({...p, owes: dueMap[p.id] - paidMap[p.id]}));
+  const creditors = FIXED_PARTNERS
+    .filter(p => paidMap[p.id] > dueMap[p.id] + 0.01)
+    .map(p => ({...p, due: paidMap[p.id] - dueMap[p.id]}));
 
   const settlements = [];
   const d = debtors.map(x=>({...x})), c = creditors.map(x=>({...x}));
-  let i=0,j=0;
-  while(i<d.length&&j<c.length){
-    const amt = Math.min(d[i].owes,c[j].due);
-    if(amt>0.01) settlements.push({from:d[i],to:c[j],amount:amt});
-    d[i].owes-=amt; c[j].due-=amt;
-    if(d[i].owes<0.01)i++; if(c[j].due<0.01)j++;
+  let i=0, j=0;
+  while (i<d.length && j<c.length) {
+    const amt = Math.min(d[i].owes, c[j].due);
+    if (amt > 0.01) settlements.push({from:d[i], to:c[j], amount:amt});
+    d[i].owes -= amt; c[j].due -= amt;
+    if (d[i].owes < 0.01) i++;
+    if (c[j].due  < 0.01) j++;
   }
+
+  // Rate badge helper
+  const rateBadge = (rate) => {
+    if (rate === 1)   return null;
+    if (rate < 1) return { text: `${Math.round((1-rate)*100)}% 折扣`, cls: 'bg-emerald-100 text-emerald-700' };
+    return             { text: `+${Math.round((rate-1)*100)}% 溢价`,   cls: 'bg-amber-100  text-amber-700'   };
+  };
 
   return (
     <div className="p-4 space-y-4">
-      {/* Summary */}
+
+      {/* ── Hero summary ── */}
       <div className="rounded-2xl p-4 text-white" style={{background:'linear-gradient(135deg,#f59e0b,#ef4444)'}}>
         <p className="text-xs opacity-80 mb-0.5">考察总支出</p>
         <p className="text-3xl font-bold mb-3">RM {total.toFixed(2)}</p>
-        {activeMembers.length>0&&(
-          <div className="flex gap-2 flex-wrap">
-            {activeMembers.map(m=>(
-              <div key={m.id} className="bg-white/20 rounded-xl p-2 flex-1 min-w-0">
-                <p className="text-xs opacity-80 truncate">{m.name}</p>
-                <p className="text-sm font-bold">RM {(paidMap[m.id]||0).toFixed(0)}</p>
+        <div className="grid grid-cols-2 gap-2">
+          {FIXED_PARTNERS.map(p => {
+            const paid = paidMap[p.id] || 0;
+            const due  = dueMap[p.id]  || 0;
+            const rb   = rateBadge(p.rate);
+            return (
+              <div key={p.id} className="bg-white/15 rounded-xl p-2.5">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <MemberAvatar member={p} size={16}/>
+                  <p className="text-xs font-semibold truncate">{p.name}</p>
+                  <span className="text-[9px] opacity-70 ml-auto">{(p.share*100).toFixed(0)}%</span>
+                </div>
+                <p className="text-sm font-bold leading-tight">
+                  RM {paid.toFixed(0)}
+                  <span className="text-[10px] opacity-70 font-normal"> / {due.toFixed(0)}</span>
+                </p>
+                {rb && <span className="text-[9px] bg-white/20 rounded px-1 py-0.5 mt-0.5 inline-block">{rb.text}</span>}
               </div>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
       </div>
 
-      {/* Settlement */}
+      {/* ── Partner breakdown ── */}
+      <Card className="p-4">
+        <p className="font-semibold text-slate-800 mb-3">📊 分摊明细</p>
+        <div className="space-y-3">
+          {FIXED_PARTNERS.map(p => {
+            const paid  = paidMap[p.id] || 0;
+            const due   = dueMap[p.id]  || 0;
+            const diff  = paid - due;
+            const rb    = rateBadge(p.rate);
+            const color = MEMBER_COLORS[p.colorIdx];
+            return (
+              <div key={p.id} className="flex items-center gap-3">
+                <MemberAvatar member={p} size={34}/>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                    <p className="text-sm font-semibold text-slate-800">{p.name}</p>
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full">
+                      {(p.share*100).toFixed(0)}%
+                    </span>
+                    {rb && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${rb.cls}`}>{rb.text}</span>
+                    )}
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-500"
+                      style={{width:`${total>0?Math.min((paid/total)*100,100):0}%`, background:color.hex}}/>
+                  </div>
+                </div>
+                <div className="text-right flex-shrink-0 min-w-[80px]">
+                  <p className="text-[10px] text-slate-400 mb-0.5">已付 / 应付</p>
+                  <p className="text-sm font-bold text-slate-800">
+                    {paid.toFixed(0)}<span className="text-slate-400 font-normal text-xs"> / {due.toFixed(0)}</span>
+                  </p>
+                  {Math.abs(diff) > 0.01 && (
+                    <p className={`text-xs font-semibold ${diff > 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                      {diff > 0 ? '多付' : '少付'} {Math.abs(diff).toFixed(2)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Rate legend */}
+        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-1.5">
+          <span className="text-[10px] text-slate-400">费率说明：</span>
+          <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full">华 正常</span>
+          <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">Chris -10%</span>
+          <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">Yin +10%</span>
+          <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">路人甲 +10%</span>
+        </div>
+      </Card>
+
+      {/* ── Settlement ── */}
       <div className={`rounded-2xl p-4 ${settlements.length===0?'bg-emerald-50 border border-emerald-100':'bg-amber-50 border border-amber-100'}`}>
-        <p className="font-semibold text-slate-800 mb-2">💰 均摊结果</p>
-        {activeMembers.length===0?(
-          <p className="text-sm text-slate-500">先添加成员再计算均摊</p>
-        ):settlements.length===0?(
-          <p className="text-emerald-600 text-sm font-medium">✅ 已平摊，无需转账！</p>
-        ):(
-          <div className="space-y-1.5">
-            {settlements.map((s,i)=>(
-              <div key={i} className="flex items-center gap-2 text-sm">
-                <MemberAvatar member={s.from} size={22}/>
-                <span className="text-slate-600">转给</span>
-                <MemberAvatar member={s.to} size={22}/>
-                <span className="font-bold text-slate-800">RM {s.amount.toFixed(2)}</span>
+        <p className="font-semibold text-slate-800 mb-2">💰 结算方案</p>
+        {settlements.length === 0 ? (
+          <p className="text-emerald-600 text-sm font-medium">✅ 已按比例结清，无需转账！</p>
+        ) : (
+          <div className="space-y-2">
+            {settlements.map((s,idx) => (
+              <div key={idx} className="flex items-center gap-2 bg-white/60 rounded-xl p-2.5">
+                <MemberAvatar member={s.from} size={26}/>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400">{s.from.name}</span>
+                </div>
+                <span className="text-slate-400 text-xs flex-shrink-0">→ 转给 →</span>
+                <MemberAvatar member={s.to} size={26}/>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400">{s.to.name}</span>
+                </div>
+                <span className="font-bold text-slate-800 ml-auto flex-shrink-0">RM {s.amount.toFixed(2)}</span>
               </div>
             ))}
           </div>
         )}
-        {activeMembers.length>0&&<p className="text-xs text-slate-400 mt-2">人均 RM {fairShare.toFixed(2)}</p>}
       </div>
 
       <SectionBtn label="记录支出" onClick={()=>setShowAdd(!showAdd)}/>
 
-      {showAdd&&(
+      {showAdd && (
         <Card className="p-4 space-y-3">
           <p className="font-semibold text-slate-800">新增支出</p>
           <input placeholder="支出描述（如：机票、住宿）" value={form.desc} onChange={e=>upd('desc',e.target.value)}
@@ -1660,7 +1757,7 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
           <div>
             <p className="text-xs text-slate-500 mb-1.5">类别</p>
             <div className="flex flex-wrap gap-2">
-              {Object.entries(CAT).map(([k,m])=>(
+              {Object.entries(CAT).map(([k,m]) => (
                 <button key={k} onClick={()=>upd('cat',k)}
                   className={`px-2.5 py-1.5 rounded-full text-xs flex items-center gap-1 border ${form.cat===k?'bg-indigo-600 text-white border-indigo-600':'text-slate-600 border-slate-200 bg-white'}`}>
                   {m.icon} {m.label}
@@ -1669,20 +1766,26 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
             </div>
           </div>
           <div>
-            <p className="text-xs text-slate-500 mb-1.5">谁支付？</p>
-            {activeMembers.length>0?(
-              <div className="flex gap-2 flex-wrap">
-                {activeMembers.map(m=>(
-                  <button key={m.id} onClick={()=>upd('by',m.id)}
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium border transition-all ${form.by===m.id?'border-transparent text-white':'bg-slate-50 text-slate-600 border-slate-200'}`}
-                    style={form.by===m.id?{background:MEMBER_COLORS[m.colorIdx??0].hex}:{}}>
-                    <MemberAvatar member={m} size={20}/> {m.name}
+            <p className="text-xs text-slate-500 mb-1.5">谁付款？</p>
+            <div className="flex gap-2 flex-wrap">
+              {FIXED_PARTNERS.map(p => {
+                const rb = rateBadge(p.rate);
+                const sel = form.by === p.id;
+                return (
+                  <button key={p.id} onClick={()=>upd('by',p.id)}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium border transition-all ${sel?'border-transparent text-white':'bg-slate-50 text-slate-600 border-slate-200'}`}
+                    style={sel ? {background:MEMBER_COLORS[p.colorIdx].hex} : {}}>
+                    <MemberAvatar member={p} size={20}/>
+                    {p.name}
+                    {rb && (
+                      <span className={`text-[9px] px-1 py-0.5 rounded ml-0.5 ${sel?'bg-white/20 text-white':rb.cls}`}>
+                        {rb.text}
+                      </span>
+                    )}
                   </button>
-                ))}
-              </div>
-            ):(
-              <p className="text-xs text-slate-400">请先在成员管理中添加成员</p>
-            )}
+                );
+              })}
+            </div>
           </div>
           <div className="flex gap-2">
             <button onClick={add} className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold">确认记录</button>
@@ -1692,10 +1795,9 @@ function ExpenseTracker({ expenses, setExpenses, members }) {
       )}
 
       <div className="space-y-2">
-        {[...expenses].reverse().map(e=>{
-          const mc=CAT[e.cat]||CAT.other;
-          const payer = resolveMember(members, e.by);
-          const color = MEMBER_COLORS[payer.colorIdx??0];
+        {[...expenses].reverse().map(e => {
+          const mc    = CAT[e.cat] || CAT.other;
+          const payer = resolvePartner(e.by);
           return (
             <div key={e.id} className="bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3">
               <div className={`w-10 h-10 rounded-full ${mc.bg} flex items-center justify-center text-base flex-shrink-0`}>{mc.icon}</div>
@@ -2458,7 +2560,7 @@ export default function App() {
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
           {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
           {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
-          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses} members={members}/>}
+          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses}/>}
           {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
           {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
           {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
