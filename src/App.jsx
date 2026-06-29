@@ -223,8 +223,8 @@ const SEED_EXPENSES = [
 ];
 
 const SEED_SUPPLIERS = [
-  { id: 1, name: '广州源一纺织', loc: '广州白云区', date: '2026-04-11', notes: '规模大，质量好，但 MOQ 较高', scale: 5, speed: 4, quality: 5, coop: 4 },
-  { id: 2, name: '深圳美创饰品', loc: '深圳龙华区', date: '2026-04-12', notes: '价格有竞争力，支持小批量试货',  scale: 3, speed: 5, quality: 4, coop: 5 },
+  { id: 1, name: '广州源一纺织', loc: '广州白云区', date: '2026-04-11', notes: '面料细腻，不起球，穿着舒适', comfort: 5, elastic: 4, notight: 4, breath: 5, craft: 5 },
+  { id: 2, name: '深圳美创饰品', loc: '深圳龙华区', date: '2026-04-12', notes: '弹力好，支持小批量试货',       comfort: 4, elastic: 5, notight: 3, breath: 4, craft: 4 },
 ];
 
 const SEED_PRODUCTS = [
@@ -289,7 +289,7 @@ const TAB_TITLE = {
 //  HELPERS
 // ═══════════════════════════════════════════════════════════
 const gMargin   = (cost, sell) => sell > 0 ? ((sell - cost) / sell * 100).toFixed(1) : '0.0';
-const gAvg      = (s)          => ((s.scale + s.speed + s.quality + s.coop) / 4).toFixed(1);
+const gAvg      = (s)          => (((s.comfort||0) + (s.elastic||0) + (s.notight||0) + (s.breath||0) + (s.craft||0)) / 5).toFixed(1);
 const marginCls = (m) => parseFloat(m) >= 40 ? 'text-emerald-600' : parseFloat(m) >= 20 ? 'text-amber-500' : 'text-rose-500';
 
 function fmtTime(d) {
@@ -1917,42 +1917,102 @@ function ExpenseTracker({ expenses, setExpenses }) {
 // ═══════════════════════════════════════════════════════════
 function SupplierRating({ suppliers, setSuppliers }) {
   const today = new Date().toISOString().slice(0,10);
-  const [showAdd,setShowAdd]=useState(false);
-  const [sortBy,setSortBy]=useState('avg');
-  const [form,setForm]=useState({name:'',loc:'',date:today,notes:'',scale:3,speed:3,quality:3,coop:3});
-  const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
+
+  // ── Evaluation dimensions (underwear-specific) ─────────────
+  const DIMS = [
+    ['comfort', '😊 舒适度',   '穿着是否舒适贴身'],
+    ['elastic', '🎗️ 柔韧度',  '弹力拉伸是否良好'],
+    ['notight', '🔓 不勒感',   '不会夹/勒/压迫'],
+    ['breath',  '💨 透气性',   '面料透气排汗能力'],
+    ['craft',   '🧵 做工',     '车缝工艺与品控'],
+  ];
+  const EMPTY_SCORES = { comfort:3, elastic:3, notight:3, breath:3, craft:3 };
+
+  const [showAdd,   setShowAdd]   = useState(false);
+  const [sortBy,    setSortBy]    = useState('avg');
+  const [form,      setForm]      = useState({name:'',loc:'',date:today,notes:'',...EMPTY_SCORES});
+  const [editingId, setEditingId] = useState(null);
+  const [editForm,  setEditForm]  = useState(null);
+
+  const upd    = (k,v) => setForm(f=>({...f,[k]:v}));
+  const updEdit= (k,v) => setEditForm(f=>({...f,[k]:v}));
 
   const dataRef = useRef(suppliers);
   useEffect(() => { dataRef.current = suppliers; }, [suppliers]);
   const { isDirty, countdown, markDirty, handleSave } = useSave('rn_suppliers', () => dataRef.current);
 
-  const add=()=>{
-    if(!form.name.trim())return;
-    setSuppliers(ss=>[...ss,{id:Date.now(),...form}]);
+  const add = () => {
+    if (!form.name.trim()) return;
+    setSuppliers(ss=>[...ss, {id:Date.now(), ...form}]);
     markDirty();
-    setForm({name:'',loc:'',date:today,notes:'',scale:3,speed:3,quality:3,coop:3});setShowAdd(false);
+    setForm({name:'',loc:'',date:today,notes:'',...EMPTY_SCORES});
+    setShowAdd(false);
   };
-  const sorted=[...suppliers].sort((a,b)=>{
-    if(sortBy==='avg')return parseFloat(gAvg(b))-parseFloat(gAvg(a));
-    if(sortBy==='quality')return b.quality-a.quality;
-    if(sortBy==='coop')return b.coop-a.coop;
+
+  const startEdit = (s) => {
+    setEditingId(s.id);
+    setEditForm({name:s.name, loc:s.loc||'', date:s.date||today, notes:s.notes||'',
+      comfort:s.comfort||3, elastic:s.elastic||3, notight:s.notight||3, breath:s.breath||3, craft:s.craft||3});
+    setShowAdd(false);
+  };
+  const saveEdit = () => {
+    if (!editForm.name.trim()) return;
+    setSuppliers(ss=>ss.map(s=>s.id===editingId ? {...s,...editForm} : s));
+    markDirty();
+    setEditingId(null); setEditForm(null);
+  };
+  const cancelEdit = () => { setEditingId(null); setEditForm(null); };
+
+  const sorted = [...suppliers].sort((a,b) => {
+    if (sortBy==='avg')     return parseFloat(gAvg(b)) - parseFloat(gAvg(a));
+    if (sortBy==='comfort') return (b.comfort||0) - (a.comfort||0);
+    if (sortBy==='craft')   return (b.craft||0)   - (a.craft||0);
     return 0;
   });
-  const updRating=(id,k,v)=>{setSuppliers(ss=>ss.map(s=>s.id===id?{...s,[k]:v}:s)); markDirty();};
-  const DIMS=[['scale','📏 规模'],['speed','⚡ 响应速度'],['quality','💎 产品质量'],['coop','🤝 配合度']];
+  const updRating = (id,k,v) => { setSuppliers(ss=>ss.map(s=>s.id===id?{...s,[k]:v}:s)); markDirty(); };
+
+  // ── Reusable star-grid for add / edit forms ─────────────────
+  const ScoreGrid = ({ vals, onChange }) => (
+    <div className="space-y-2">
+      {DIMS.map(([k,l,hint])=>(
+        <div key={k} className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <span className="text-sm text-slate-700">{l}</span>
+            <p className="text-[10px] text-slate-400 leading-tight">{hint}</p>
+          </div>
+          <StarRow value={vals[k]||3} onChange={v=>onChange(k,v)} size={20}/>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="p-4 space-y-4">
+
+      {/* Sort bar */}
       <div className="flex gap-2">
-        {[['avg','综合'],['quality','质量'],['coop','配合度']].map(([v,l])=>(
+        {[['avg','综合'],['comfort','舒适度'],['craft','做工']].map(([v,l])=>(
           <button key={v} onClick={()=>setSortBy(v)}
             className={`flex-1 py-1.5 rounded-full text-xs font-medium border ${sortBy===v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-500 border-slate-200'}`}>
             {l}排序
           </button>
         ))}
       </div>
-      <SectionBtn label="添加考察记录" onClick={()=>setShowAdd(!showAdd)}/>
-      {showAdd&&(
+
+      {/* Dimension legend */}
+      <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-1 gap-1">
+        {DIMS.map(([,l,hint])=>(
+          <div key={l} className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="font-medium text-slate-700 w-20 flex-shrink-0">{l}</span>
+            <span>{hint}</span>
+          </div>
+        ))}
+      </div>
+
+      <SectionBtn label="添加考察记录" onClick={()=>{setShowAdd(!showAdd); setEditingId(null);}}/>
+
+      {/* Add form */}
+      {showAdd && (
         <Card className="p-4 space-y-3">
           <p className="font-semibold text-slate-800">新增考察供应商</p>
           <input placeholder="供应商 / 工厂名称" value={form.name} onChange={e=>upd('name',e.target.value)}
@@ -1963,49 +2023,84 @@ function SupplierRating({ suppliers, setSuppliers }) {
             <input type="date" value={form.date} onChange={e=>upd('date',e.target.value)}
               className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
           </div>
-          <textarea rows={2} placeholder="考察备注…" value={form.notes} onChange={e=>upd('notes',e.target.value)}
+          <textarea rows={2} placeholder="考察备注（面料手感、样品印象…）" value={form.notes} onChange={e=>upd('notes',e.target.value)}
             className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none"/>
-          <div className="space-y-2">
-            {DIMS.map(([k,l])=>(
-              <div key={k} className="flex items-center justify-between">
-                <span className="text-sm text-slate-600">{l}</span>
-                <StarRow value={form[k]} onChange={v=>upd(k,v)} size={20}/>
-              </div>
-            ))}
-          </div>
+          <ScoreGrid vals={form} onChange={upd}/>
           <div className="flex gap-2">
             <button onClick={add} className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold">保存记录</button>
             <button onClick={()=>setShowAdd(false)} className="flex-1 bg-slate-100 text-slate-600 rounded-xl py-2.5 text-sm font-semibold">取消</button>
           </div>
         </Card>
       )}
-      {sorted.length===0&&!showAdd&&(<div className="text-center py-14 text-slate-400"><MapPin size={40} className="mx-auto mb-3 opacity-25"/><p className="text-sm">暂无考察记录</p></div>)}
-      {sorted.map((s,idx)=>(
-        <Card key={s.id} className="p-4">
-          <div className="flex justify-between items-start mb-3">
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <p className="font-bold text-slate-800">{s.name}</p>
-                {idx===0&&<span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">⭐ Top 1</span>}
+
+      {sorted.length===0&&!showAdd&&(
+        <div className="text-center py-14 text-slate-400">
+          <MapPin size={40} className="mx-auto mb-3 opacity-25"/>
+          <p className="text-sm">暂无考察记录</p>
+        </div>
+      )}
+
+      {sorted.map((s,idx)=>{
+        // ── Inline edit form ──────────────────────────────────
+        if (editingId===s.id && editForm) {
+          return (
+            <Card key={s.id} className="p-4 space-y-3 border-indigo-200">
+              <p className="font-semibold text-slate-800">编辑考察记录</p>
+              <input placeholder="供应商 / 工厂名称" value={editForm.name} onChange={e=>updEdit('name',e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
+              <div className="flex gap-2">
+                <input placeholder="城市 / 地区" value={editForm.loc} onChange={e=>updEdit('loc',e.target.value)}
+                  className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
+                <input type="date" value={editForm.date} onChange={e=>updEdit('date',e.target.value)}
+                  className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
               </div>
-              <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin size={10}/> {s.loc} · {s.date}</p>
+              <textarea rows={2} placeholder="考察备注…" value={editForm.notes} onChange={e=>updEdit('notes',e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none"/>
+              <ScoreGrid vals={editForm} onChange={updEdit}/>
+              <div className="flex gap-2">
+                <button onClick={saveEdit} className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold">保存</button>
+                <button onClick={cancelEdit} className="flex-1 bg-slate-100 text-slate-600 rounded-xl py-2.5 text-sm font-semibold">取消</button>
+              </div>
+            </Card>
+          );
+        }
+
+        // ── Normal card ───────────────────────────────────────
+        return (
+          <Card key={s.id} className="p-4">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-bold text-slate-800">{s.name}</p>
+                  {idx===0&&<span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">⭐ Top 1</span>}
+                </div>
+                <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin size={10}/> {s.loc} · {s.date}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-2xl font-bold text-indigo-600">{gAvg(s)}</p>
+                <p className="text-xs text-slate-400">综合评分</p>
+              </div>
             </div>
-            <div className="text-right"><p className="text-2xl font-bold text-indigo-600">{gAvg(s)}</p><p className="text-xs text-slate-400">综合评分</p></div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            {DIMS.map(([k,l])=>(
-              <div key={k} className="bg-slate-50 rounded-xl p-2.5">
-                <p className="text-xs text-slate-500 mb-1">{l}</p>
-                <StarRow value={s[k]} onChange={v=>updRating(s.id,k,v)} size={14}/>
-              </div>
-            ))}
-          </div>
-          {s.notes&&<div className="bg-blue-50 rounded-xl p-2.5 text-xs text-slate-600 mb-2">📝 {s.notes}</div>}
-          <div className="flex justify-end">
-            <button onClick={()=>{setSuppliers(ss=>ss.filter(x=>x.id!==s.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
-          </div>
-        </Card>
-      ))}
+
+            {/* Score grid — tap stars to quick-edit inline */}
+            <div className="grid grid-cols-1 gap-2 mb-3">
+              {DIMS.map(([k,l])=>(
+                <div key={k} className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2">
+                  <span className="text-xs text-slate-600 w-20 flex-shrink-0">{l}</span>
+                  <StarRow value={s[k]||3} onChange={v=>updRating(s.id,k,v)} size={14}/>
+                </div>
+              ))}
+            </div>
+
+            {s.notes&&<div className="bg-blue-50 rounded-xl p-2.5 text-xs text-slate-600 mb-2">📝 {s.notes}</div>}
+
+            <div className="flex justify-end gap-3">
+              <button onClick={()=>startEdit(s)} className="text-xs text-indigo-400">编辑</button>
+              <button onClick={()=>{setSuppliers(ss=>ss.filter(x=>x.id!==s.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
+            </div>
+          </Card>
+        );
+      })}
 
       <SaveBar isDirty={isDirty} countdown={countdown} onSave={handleSave}/>
     </div>
