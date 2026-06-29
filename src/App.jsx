@@ -1577,9 +1577,12 @@ function ProductBenchmark({ products, setProducts }) {
 // ═══════════════════════════════════════════════════════════
 function ExpenseTracker({ expenses, setExpenses }) {
   const today = new Date().toISOString().slice(0,10);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd,    setShowAdd]    = useState(false);
+  const [editingId,  setEditingId]  = useState(null);
+  const [editForm,   setEditForm]   = useState(null);
   const [form, setForm] = useState({desc:'', amount:'', cat:'food', by:'hua', date:today});
-  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+  const upd     = (k,v) => setForm(f=>({...f,[k]:v}));
+  const updEdit = (k,v) => setEditForm(f=>({...f,[k]:v}));
 
   const dataRef = useRef(expenses);
   useEffect(() => { dataRef.current = expenses; }, [expenses]);
@@ -1592,6 +1595,25 @@ function ExpenseTracker({ expenses, setExpenses }) {
     setForm({desc:'', amount:'', cat:'food', by:'hua', date:today});
     setShowAdd(false);
   };
+
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setEditForm({desc:e.desc, amount:String(e.amount), cat:e.cat||'food', by:e.by||'hua', date:e.date||today});
+    setShowAdd(false);
+  };
+
+  const saveEdit = () => {
+    if (!editForm.desc.trim() || !editForm.amount) return;
+    setExpenses(es => es.map(e => e.id === editingId
+      ? {...e, ...editForm, amount:parseFloat(editForm.amount)}
+      : e
+    ));
+    markDirty();
+    setEditingId(null);
+    setEditForm(null);
+  };
+
+  const cancelEdit = () => { setEditingId(null); setEditForm(null); };
 
   // ── Weighted split calculation ─────────────────────────
   // Each partner's due = total × share × rate
@@ -1798,6 +1820,71 @@ function ExpenseTracker({ expenses, setExpenses }) {
         {[...expenses].reverse().map(e => {
           const mc    = CAT[e.cat] || CAT.other;
           const payer = resolvePartner(e.by);
+
+          // ── Inline edit form ──────────────────────────
+          if (editingId === e.id && editForm) {
+            return (
+              <div key={e.id} className="bg-white rounded-xl p-4 shadow-sm border border-indigo-200 space-y-3">
+                <p className="text-sm font-semibold text-slate-700">编辑支出</p>
+                <input
+                  placeholder="支出描述" value={editForm.desc}
+                  onChange={ev=>updEdit('desc',ev.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="number" placeholder="金额 (RM)" value={editForm.amount}
+                    onChange={ev=>updEdit('amount',ev.target.value)}
+                    className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                  />
+                  <input
+                    type="date" value={editForm.date}
+                    onChange={ev=>updEdit('date',ev.target.value)}
+                    className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-1.5">类别</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(CAT).map(([k,m]) => (
+                      <button key={k} onClick={()=>updEdit('cat',k)}
+                        className={`px-2.5 py-1.5 rounded-full text-xs flex items-center gap-1 border ${editForm.cat===k?'bg-indigo-600 text-white border-indigo-600':'text-slate-600 border-slate-200 bg-white'}`}>
+                        {m.icon} {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-1.5">谁付款？</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {FIXED_PARTNERS.map(p => {
+                      const rb  = rateBadge(p.rate);
+                      const sel = editForm.by === p.id;
+                      return (
+                        <button key={p.id} onClick={()=>updEdit('by',p.id)}
+                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium border transition-all ${sel?'border-transparent text-white':'bg-slate-50 text-slate-600 border-slate-200'}`}
+                          style={sel ? {background:MEMBER_COLORS[p.colorIdx].hex} : {}}>
+                          <MemberAvatar member={p} size={20}/>
+                          {p.name}
+                          {rb && (
+                            <span className={`text-[9px] px-1 py-0.5 rounded ml-0.5 ${sel?'bg-white/20 text-white':rb.cls}`}>
+                              {rb.text}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button onClick={saveEdit} className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold">保存</button>
+                  <button onClick={cancelEdit} className="flex-1 bg-slate-100 text-slate-600 rounded-xl py-2.5 text-sm font-semibold">取消</button>
+                </div>
+              </div>
+            );
+          }
+
+          // ── Normal row ────────────────────────────────
           return (
             <div key={e.id} className="bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3">
               <div className={`w-10 h-10 rounded-full ${mc.bg} flex items-center justify-center text-base flex-shrink-0`}>{mc.icon}</div>
@@ -1810,7 +1897,10 @@ function ExpenseTracker({ expenses, setExpenses }) {
               </div>
               <div className="text-right flex-shrink-0">
                 <p className="font-bold text-slate-800 text-sm">RM {e.amount}</p>
-                <button onClick={()=>{setExpenses(es=>es.filter(x=>x.id!==e.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
+                <div className="flex gap-2 justify-end mt-0.5">
+                  <button onClick={()=>startEdit(e)} className="text-xs text-indigo-400">编辑</button>
+                  <button onClick={()=>{setExpenses(es=>es.filter(x=>x.id!==e.id)); markDirty();}} className="text-xs text-rose-400">删除</button>
+                </div>
               </div>
             </div>
           );
