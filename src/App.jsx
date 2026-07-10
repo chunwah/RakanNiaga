@@ -2752,4 +2752,19 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto" style={{paddingBottom:tab==='chat'?0:'4.5rem'}}>
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
-          {tab==='files'      && <FileCenter files={files} 
+          {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
+          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
+          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses}/>}
+          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
+          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
+          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
+          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={true}/>}
+          {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
+        </main>
+
+        <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen} unreadCount={unreadCount}/>
+      </div>
+      </DirtyCtx.Provider>
+    </AppCtx.Provider>
+  );
+}
