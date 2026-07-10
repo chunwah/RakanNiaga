@@ -288,7 +288,8 @@ const TAB_TITLE = {
 // ═══════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════
-const gMargin   = (cost, sell) => sell > 0 ? ((sell - cost) / sell * 100).toFixed(1) : '0.0';
+const gMargin    = (cost, sell) => sell > 0 ? ((sell - cost) / sell * 100).toFixed(1) : '0.0';
+const gTotalCost = (s) => (parseFloat(s.cost)||0) + (parseFloat(s.shipping)||0) + (parseFloat(s.packaging)||0);
 const gAvg      = (s)          => (((s.comfort||0) + (s.elastic||0) + (s.notight||0) + (s.breath||0) + (s.craft||0)) / 5).toFixed(1);
 const marginCls = (m) => parseFloat(m) >= 40 ? 'text-emerald-600' : parseFloat(m) >= 20 ? 'text-amber-500' : 'text-rose-500';
 
@@ -1474,7 +1475,7 @@ function FileCenter({ files, setFiles, sheetsUrl }) {
 function ProductBenchmark({ products, setProducts }) {
   const [showAdd,setShowAdd]=useState(false);
   const [expanded,setExpanded]=useState(null);
-  const [np,setNp]=useState({name:'',supName:'',cost:'',moq:'',shopee:'',lazada:''});
+  const [np,setNp]=useState({name:'',supName:'',cost:'',shipping:'',packaging:'',moq:'',shopee:'',lazada:''});
 
   const dataRef = useRef(products);
   useEffect(() => { dataRef.current = products; }, [products]);
@@ -1482,12 +1483,12 @@ function ProductBenchmark({ products, setProducts }) {
 
   const addProduct=()=>{
     if(!np.name.trim())return;
-    setProducts(ps=>[{id:Date.now(),name:np.name.trim(),suppliers:[{id:1,name:np.supName||'待命名供应商',cost:+np.cost||0,moq:+np.moq||0,shopee:+np.shopee||0,lazada:+np.lazada||0}]},...ps]);
+    setProducts(ps=>[{id:Date.now(),name:np.name.trim(),suppliers:[{id:1,name:np.supName||'待命名供应商',cost:+np.cost||0,shipping:+np.shipping||0,packaging:+np.packaging||0,moq:+np.moq||0,shopee:+np.shopee||0,lazada:+np.lazada||0}]},...ps]);
     markDirty();
-    setNp({name:'',supName:'',cost:'',moq:'',shopee:'',lazada:''});setShowAdd(false);
+    setNp({name:'',supName:'',cost:'',shipping:'',packaging:'',moq:'',shopee:'',lazada:''});setShowAdd(false);
   };
   const updSup=(pid,sid,k,v)=>{setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:p.suppliers.map(s=>s.id!==sid?s:{...s,[k]:parseFloat(v)||0})})); markDirty();};
-  const addSup=(pid)=>{setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:[...p.suppliers,{id:Date.now(),name:'新供应商',cost:0,moq:0,shopee:p.suppliers[0]?.shopee||0,lazada:p.suppliers[0]?.lazada||0}]})); markDirty();};
+  const addSup=(pid)=>{setProducts(ps=>ps.map(p=>p.id!==pid?p:{...p,suppliers:[...p.suppliers,{id:Date.now(),name:'新供应商',cost:0,shipping:0,packaging:0,moq:0,shopee:p.suppliers[0]?.shopee||0,lazada:p.suppliers[0]?.lazada||0}]})); markDirty();};
 
   return (
     <div className="p-4 space-y-4">
@@ -1500,7 +1501,7 @@ function ProductBenchmark({ products, setProducts }) {
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
           ))}
           <div className="grid grid-cols-2 gap-2">
-            {[['cost','进货价 (RM)'],['moq','起订量 (件)'],['shopee','Shopee 售价'],['lazada','Lazada 售价']].map(([k,ph])=>(
+            {[['cost','进货价 (RM)'],['shipping','运输费 (RM/件)'],['packaging','包装费 (RM/件)'],['moq','起订量 (件)'],['shopee','Shopee 售价'],['lazada','Lazada 售价']].map(([k,ph])=>(
               <div key={k}><p className="text-xs text-slate-500 mb-1">{ph}</p>
                 <input type="number" value={np[k]} onChange={e=>setNp(p=>({...p,[k]:e.target.value}))}
                   className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/></div>
@@ -1514,7 +1515,7 @@ function ProductBenchmark({ products, setProducts }) {
       )}
       {products.length===0&&!showAdd&&(<div className="text-center py-14 text-slate-400"><ShoppingBag size={40} className="mx-auto mb-3 opacity-25"/><p className="text-sm">暂无商品</p></div>)}
       {products.map(prod=>{
-        const best=[...prod.suppliers].sort((a,b)=>parseFloat(gMargin(b.cost,b.shopee))-parseFloat(gMargin(a.cost,a.shopee)))[0];
+        const best=[...prod.suppliers].sort((a,b)=>parseFloat(gMargin(gTotalCost(b),b.shopee))-parseFloat(gMargin(gTotalCost(a),a.shopee)))[0];
         const open=expanded===prod.id;
         return (
           <Card key={prod.id} className="overflow-hidden">
@@ -1529,8 +1530,11 @@ function ProductBenchmark({ products, setProducts }) {
               {best&&(<div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-semibold mb-1">⭐ 推荐货源（最高毛利）</p>
                 <div className="flex justify-between items-center">
-                  <div><p className="text-sm font-medium text-slate-700">{best.name}</p><p className="text-xs text-slate-400">RM {best.cost}/件 · MOQ {best.moq} 件</p></div>
-                  <p className={`text-lg font-bold ${marginCls(gMargin(best.cost,best.shopee))}`}>{gMargin(best.cost,best.shopee)}%</p>
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">{best.name}</p>
+                    <p className="text-xs text-slate-400">进货 RM {best.cost} + 运费 RM {best.shipping||0} + 包装 RM {best.packaging||0} = 总成本 RM {gTotalCost(best).toFixed(2)}/件 · MOQ {best.moq} 件</p>
+                  </div>
+                  <p className={`text-lg font-bold ${marginCls(gMargin(gTotalCost(best),best.shopee))}`}>{gMargin(gTotalCost(best),best.shopee)}%</p>
                 </div>
               </div>)}
             </div>
@@ -1538,15 +1542,20 @@ function ProductBenchmark({ products, setProducts }) {
               <div className="px-4 pb-4 border-t border-slate-50 space-y-3 pt-3">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">货源对比</p>
                 {prod.suppliers.map(s=>{
-                  const m=parseFloat(gMargin(s.cost,s.shopee));
+                  const totalCost=gTotalCost(s);
+                  const m=parseFloat(gMargin(totalCost,s.shopee));
                   return (
                     <div key={s.id} className="border border-slate-100 rounded-xl p-3 space-y-2">
                       <input value={s.name} onChange={e=>updSup(prod.id,s.id,'name',e.target.value)} className="font-semibold text-slate-800 w-full outline-none text-sm border-b border-slate-100 pb-1"/>
                       <div className="grid grid-cols-2 gap-2">
-                        {[['cost','进货价','RM'],['moq','MOQ','件'],['shopee','Shopee','RM'],['lazada','Lazada','RM']].map(([k,l,u])=>(
+                        {[['cost','进货价','RM'],['shipping','运输费','RM/件'],['packaging','包装费','RM/件'],['moq','MOQ','件'],['shopee','Shopee','RM'],['lazada','Lazada','RM']].map(([k,l,u])=>(
                           <div key={k}><p className="text-xs text-slate-400 mb-0.5">{l} ({u})</p>
                             <input type="number" value={s[k]} onChange={e=>updSup(prod.id,s.id,k,e.target.value)} className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-indigo-300"/></div>
                         ))}
+                      </div>
+                      <div className="flex justify-between items-center pt-0.5">
+                        <span className="text-xs text-slate-500">总成本 (进货+运输+包装)</span>
+                        <span className="text-sm font-semibold text-slate-700">RM {totalCost.toFixed(2)}/件</span>
                       </div>
                       <div className="flex justify-between items-center pt-0.5">
                         <span className="text-xs text-slate-500">Shopee 预估毛利率</span>
@@ -2743,19 +2752,4 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto" style={{paddingBottom:tab==='chat'?0:'4.5rem'}}>
           {tab==='dashboard'  && <Dashboard files={files} products={products} expenses={expenses} suppliers={suppliers} goals={goals} go={go} onReset={handleReset}/>}
-          {tab==='files'      && <FileCenter files={files} setFiles={setFiles} sheetsUrl={sheetsUrl}/>}
-          {tab==='products'   && <ProductBenchmark products={products} setProducts={setProducts}/>}
-          {tab==='expenses'   && <ExpenseTracker expenses={expenses} setExpenses={setExpenses}/>}
-          {tab==='suppliers'  && <SupplierRating suppliers={suppliers} setSuppliers={setSuppliers}/>}
-          {tab==='calculator' && <FinancialCalculator calc={calc} setCalc={setCalc}/>}
-          {tab==='goals'      && <GoalsChecklist goals={goals} setGoals={setGoals} members={members}/>}
-          {tab==='chat'       && <PartnerChat messages={messages} setMessages={setMessages} members={members} isLive={true}/>}
-          {tab==='members'    && <MembersManager members={members} setMembers={setMembers}/>}
-        </main>
-
-        <BottomNav active={tab} go={go} moreOpen={moreOpen} setMoreOpen={setMoreOpen} unreadCount={unreadCount}/>
-      </div>
-      </DirtyCtx.Provider>
-    </AppCtx.Provider>
-  );
-}
+          {tab==='files'      && <FileCenter files={files} 
